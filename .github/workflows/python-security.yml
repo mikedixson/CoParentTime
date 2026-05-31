@@ -1,0 +1,38 @@
+name: 'Python Security Scan'
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  security-scan:
+    runs-on: 'ubuntu-latest'
+    name: 'Scan Python dependencies'
+
+    steps:
+      - name: 'Checkout repository'
+        uses: 'actions/checkout@v4'
+
+      - name: 'Set up Python'
+        uses: 'actions/setup-python@v5'
+        with:
+          python-version: '3.12'
+
+      - name: 'Install dependencies'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: 'Run pip-audit'
+        uses: 'pypa/gh-action-pip-audit@v1'
+        with:
+          inputs: 'requirements.txt requirements-dev.txt'
+          ignore-vulns: ''
