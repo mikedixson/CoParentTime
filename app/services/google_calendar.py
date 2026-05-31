@@ -16,9 +16,27 @@ def _validate_google_calendar_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"}:
         raise GoogleCalendarFetchError("Google Calendar URL must start with http:// or https://")
     hostname = (parsed.hostname or "").lower()
-    allowed_hosts = {"calendar.google.com", "www.google.com", "google.com"}
-    if hostname not in allowed_hosts and not hostname.endswith(".google.com"):
+    
+    # Use strict whitelist matching instead of endswith to prevent bypass
+    # Allow only specific Google Calendar domains
+    allowed_hosts = {
+        "calendar.google.com",
+        "www.google.com",
+        "google.com",
+    }
+    
+    # Only allow additional subdomains of google.com with strict validation
+    # Must have at least one dot and not have suspicious patterns
+    is_valid_subdomain = (
+        hostname.endswith(".google.com")
+        and hostname.count(".") == 2  # Ensure only one subdomain level
+        and len(hostname.split(".")[0]) > 0  # Has subdomain
+        and hostname.split(".")[0].replace("-", "").isalnum()  # Alphanumeric or hyphen only
+    )
+    
+    if hostname not in allowed_hosts and not is_valid_subdomain:
         raise GoogleCalendarFetchError("Google Calendar URL must point to a Google host")
+    
     return url.strip()
 
 
