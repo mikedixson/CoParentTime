@@ -1,0 +1,29 @@
+{
+  "partner_enabled": true,
+  "partner_name": "Alex",
+  "school_holiday_ranges": [
+    "20/07/2026 - 02/09/2026",
+    "20261024-20261101",
+    "2026-12-21 - 2027-01-03"
+  ],
+  "partner_kid_free_ranges": [
+    "2026-07-21 08:00 to 2026-07-22 09:00",
+    "2026-07-23 15:00 to 2026-07-24 15:00",
+    "2026-08-02 19:00 to 2026-08-09 19:00",
+    "2026-08-23 19:00 to 2026-09-04 15:00",
+    "exclude: 2026-08-26 to 2026-09-01"
+  ],
+  "google_calendar_ical_url": "https://calendar.google.com/calendar/ical/your_calendar_id/basic.ics",
+  "pre_holiday_school_pickup_time": "15:30",
+  "default_handover_time": "13:00",
+  "handover_time_overrides": {
+    "20260808": "17:00"
+  },
+  "schedule_visual_default": "both",
+  "this_parent": "Dad",
+  "other_parent": "Mum",
+  "this_parent_color": "#0f766e",
+  "other_parent_color": "#b45309",
+  "partner_available_color": "#22c55e",
+  "partner_unavailable_color": "#f97316"
+}

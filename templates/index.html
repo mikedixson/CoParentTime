@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CoParenTime MVP</title>
+  <style>[hidden]{display:none !important;}</style>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>CoParenTime Local Planner</h1>
+      <p>Deterministic co-parenting schedule generation with full audit trails.</p>
+    </section>
+
+    <section class="panel">
+      <form id="planForm">
+        <div class="grid">
+          <label>Last day of term
+            <input type="date" name="holiday_start" required />
+          </label>
+          <label>First day of term
+            <input type="date" name="holiday_end" required />
+          </label>
+          <label>Holiday preset (from config)
+            <select id="holidayPreset">
+              <option value="">Choose a configured holiday range</option>
+            </select>
+          </label>
+        </div>
+
+        <label id="partnerSection"{% if not partner_enabled %} hidden{% endif %}><span id="partnerTextLabel">Partner Availability</span> (one item per line)
+          <textarea name="partner_text" rows="8" placeholder="kidfree: 2026-08-01 18:00 to 2026-08-03 18:00&#10;exclude: 2026-08-10 to 2026-08-12"></textarea>
+        </label>
+
+        <label>Ical content (optional)
+          <textarea name="ical_content" rows="5" placeholder="Paste .ics content here"></textarea>
+        </label>
+
+        <label>Google Calendar iCal URL (optional)
+          <input type="url" name="google_calendar_ical_url" placeholder="https://calendar.google.com/calendar/ical/.../basic.ics" />
+        </label>
+
+        <label class="checkbox">
+          <input type="checkbox" name="pre_holiday_schoolday_confirmed" />
+          Pre-holiday school pick-up handover confirmed
+        </label>
+
+        <div class="submit-row">
+          <button type="submit" id="submitBtn">Run Plan</button>
+          <span class="status-msg" id="statusMsg" aria-live="polite"></span>
+        </div>
+      </form>
+    </section>
+
+    <div class="spinner-overlay" id="spinnerOverlay" hidden aria-hidden="true">
+      <div class="spinner"></div>
+      <p>Generating schedule&hellip;</p>
+    </div>
+
+    <section class="panel" id="resultPanel" hidden>
+      <h2>Result</h2>
+      <div id="resultSummary" class="result-summary"></div>
+      <div id="googleWarningBanner" class="warning-banner" hidden role="status" aria-live="polite"></div>
+      <div id="scheduleVisualModeBar" class="view-toggle schedule-view-mode" role="tablist" aria-label="Schedule visual mode" hidden>
+        <button type="button" class="toggle-btn" data-visual-mode="timeline">Timeline</button>
+        <button type="button" class="toggle-btn" data-visual-mode="calendar">Calendar</button>
+        <button type="button" class="toggle-btn" data-visual-mode="both">Both</button>
+      </div>
+      <div id="resultCards"></div>
+      <details id="rawDetails">
+        <summary>Raw JSON</summary>
+        <pre id="result"></pre>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const APP_CONFIG = {{ ui_config_json | safe }};
+    const form        = document.getElementById('planForm');
+    const submitBtn   = document.getElementById('submitBtn');
+    const statusMsg   = document.getElementById('statusMsg');
+    const overlay     = document.getElementById('spinnerOverlay');
+    const resultPanel = document.getElementById('resultPanel');
+    const resultSummary = document.getElementById('resultSummary');
+    const googleWarningBanner = document.getElementById('googleWarningBanner');
+    const scheduleVisualModeBar = document.getElementById('scheduleVisualModeBar');
+    const resultCards = document.getElementById('resultCards');
+    const resultPre   = document.getElementById('result');
+    const rawDetails  = document.getElementById('rawDetails');
+    const partnerTextLabel = document.getElementById('partnerTextLabel');
+    const partnerSection = document.getElementById('partnerSection');
+    const holidayPreset = document.getElementById('holidayPreset');
+    let currentVisualMode = 'both';
+    const renderedPlansById = new Map();
+
+    function partnerEnabled() {
+      const raw = APP_CONFIG.partner_enabled;
+      if (typeof raw === 'boolean') return raw;
+      if (typeof raw === 'string') {
+        const value = raw.trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+        if (['0', 'false', 'no', 'off', ''].includes(value)) return false;
+      }
+      return Boolean(raw);
+    }
+
+    function partnerName() {
+      return (APP_CONFIG.partner_name || 'Partner').trim() || 'Partner';
+    }
+
+    function dadTitle() {
+      return (APP_CONFIG.this_parent || APP_CONFIG.dad_title || 'Dad').trim() || 'Dad';
+    }
+
+    function mumTitle() {
+      return (APP_CONFIG.other_parent || APP_CONFIG.mum_title || 'Mum').trim() || 'Mum';
+    }
+
+    function ownerTitle(ownerRaw) {
+      const owner = String(ownerRaw || '').trim().toLowerCase();
+      if (owner === 'dad') return dadTitle();
+      if (owner === 'mum') return mumTitle();
+      return ownerRaw || 'None';
+    }
+
+    function normalizeVisualMode(raw) {
+      const v = String(raw || '').trim().toLowerCase();
+      if (v === 'timeline' || v === 'calendar' || v === 'both') return v;
+      return 'both';
+    }
+
+    function applyVisualConfig() {
+      const root = document.documentElement;
+      root.style.setProperty('--this-parent-color', String(APP_CONFIG.this_parent_color || APP_CONFIG.dad_color || '#0f766e'));
+      root.style.setProperty('--other-parent-color', String(APP_CONFIG.other_parent_color || APP_CONFIG.mum_color || '#b45309'));
+      root.style.setProperty('--partner-available-color', String(APP_CONFIG.partner_available_color || '#22c55e'));
+      root.style.setProperty('--partner-unavailable-color', String(APP_CONFIG.partner_unavailable_color || '#f97316'));
+    }
+
+    function configurePartnerLabels() {
+      if (partnerTextLabel) {
+        partnerTextLabel.textContent = 'Partner Availability';
+      }
+      if (partnerSection) {
+        partnerSection.hidden = !partnerEnabled();
+      }
+    }
+
+    function normalizePartnerAvailabilityLine(rawLine) {
+      const line = String(rawLine || '').trim();
+      const lower = line.toLowerCase();
+      if (!line) return '';
+
+      if (lower.startsWith('kidfree:') || lower.startsWith('kid-free:') || lower.startsWith('available:')) {
+        return line.split(':', 2)[1].trim();
+      }
+
+      if (lower.startsWith('exclusion:') || lower.startsWith('unavailable:')) {
+        return `exclude: ${line.split(':', 2)[1].trim()}`;
+      }
+
+      return line;
+    }
+
+    function kidFreeRangesToText(ranges) {
+      return (ranges || []).map(r => {
+        if (typeof r === 'string') return normalizePartnerAvailabilityLine(r);
+        if (r && r.raw) return normalizePartnerAvailabilityLine(r.raw);
+        if (r && r.start && r.end) return `${r.start} 00:00 to ${r.end} 23:59`;
+        return '';
+      }).filter(Boolean).join('\n');
+    }
+
+    function configureHolidayPresetSelect() {
+      const ranges = APP_CONFIG.school_holiday_ranges || [];
+      if (!holidayPreset) return;
+
+      ranges.forEach((r, idx) => {
+        const option = document.createElement('option');
+        option.value = String(idx);
+        option.textContent = r.raw;
+        holidayPreset.appendChild(option);
+      });
+
+      holidayPreset.addEventListener('change', () => {
+        const chosen = ranges[Number(holidayPreset.value)];
+        if (!chosen) return;
+        form.elements['holiday_start'].value = chosen.start;
+        form.elements['holiday_end'].value = chosen.end;
+      });
+
+      if (ranges.length) {
+        form.elements['holiday_start'].value = ranges[0].start;
+        form.elements['holiday_end'].value = ranges[0].end;
+      }
+    }
+
+    function configurePartnerKidFreeDefaults() {
+      if (!partnerEnabled()) return;
+      const area = form.elements['partner_text'];
+      if (!area || area.value.trim()) return;
+      const defaultText = kidFreeRangesToText(APP_CONFIG.partner_kid_free_ranges || []);
+      if (defaultText) {
+        area.value = defaultText;
+      }
+    }
+
+    function configureGoogleCalendarDefault() {
+      const input = form.elements['google_calendar_ical_url'];
+      if (!input || input.value.trim()) return;
+      if (APP_CONFIG.google_calendar_ical_url) {
+        input.value = APP_CONFIG.google_calendar_ical_url;
+      }
+    }
+
+    function isWeekdayDate(dateText) {
+      if (!dateText) return false;
+      const d = new Date(`${dateText}T12:00:00`);
+      if (Number.isNaN(d.getTime())) return false;
+      const day = d.getDay();
+      return day >= 1 && day <= 5;
+    }
+
+    function syncSchooldayConfirmationCheckbox() {
+      const startInput = form.elements['holiday_start'];
+      const checkbox = form.elements['pre_holiday_schoolday_confirmed'];
+      if (!startInput || !checkbox) return;
+
+      checkbox.checked = isWeekdayDate(startInput.value);
+    }
+
+    function wireSchooldayConfirmationSync() {
+      const startInput = form.elements['holiday_start'];
+      if (!startInput) return;
+      startInput.addEventListener('change', syncSchooldayConfirmationCheckbox);
+      startInput.addEventListener('input', syncSchooldayConfirmationCheckbox);
+    }
+
+    function setLoading(on) {
+      submitBtn.disabled = on;
+      overlay.style.display = on ? 'flex' : 'none';
+      overlay.setAttribute('aria-hidden', String(!on));
+      statusMsg.textContent = on ? 'Processing\u2026' : '';
+      statusMsg.className   = 'status-msg' + (on ? ' loading' : '');
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function displayShortId(rawId) {
+      const str = String(rawId ?? '');
+      const match = str.match(/^(?:text-|line-)?(\d+)$/);
+      return match ? match[1] : str;
+    }
+
+    function fmtDt(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })
+        + ' ' + d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+    }
+
+    function blockTable(blocks) {
+      if (!blocks || !blocks.length) return '<em>No blocks</em>';
+      const rows = blocks.map(b =>
+        `<tr><td>${esc(ownerTitle(b.owner))}</td><td>${fmtDt(b.start)}</td><td>${fmtDt(b.end)}</td><td>${esc(b.length_days)}</td></tr>`
+      ).join('');
+      return `<table class="data-table"><thead><tr><th>Owner</th><th>Start</th><th>End</th><th>Days</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function fmtDateOnly(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+    }
+
+    function fmtDateFromMs(ms) {
+      const d = new Date(ms);
+      return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+    }
+
+    function pct(num, den) {
+      if (!den || den <= 0) return 0;
+      return (num / den) * 100;
+    }
+
+    function overlapMs(aStart, aEnd, bStart, bEnd) {
+      const start = Math.max(aStart, bStart);
+      const end = Math.min(aEnd, bEnd);
+      return Math.max(end - start, 0);
+    }
+
+    function toDayKeyFromDateParts(year, month, day) {
+      return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+
+    function toDayKeyFromMsUTC(ms) {
+      const d = new Date(ms);
+      return toDayKeyFromDateParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+    }
+
+    function dayKeyToUtcMs(dayKey) {
+      const [y, m, d] = String(dayKey).split('-').map(Number);
+      return Date.UTC(y, (m || 1) - 1, d || 1);
+    }
+
+    function addDaysToDayKey(dayKey, days) {
+      return toDayKeyFromMsUTC(dayKeyToUtcMs(dayKey) + (days * 86400000));
+    }
+
+    function prevDayKey(dayKey) {
+      return addDaysToDayKey(dayKey, -1);
+    }
+
+    function isoDayKey(iso) {
+      const s = String(iso || '');
+      const i = s.indexOf('T');
+      return (i >= 0 ? s.slice(0, i) : s.slice(0, 10)).trim();
+    }
+
+    function isIsoMidnight(iso) {
+      const s = String(iso || '');
+      const i = s.indexOf('T');
+      if (i < 0) return false;
+      const t = s.slice(i + 1);
+      return /^00:00:00(?:\.0+)?(?:Z|[+-]\d{2}:\d{2})?$/.test(t);
+    }
+
+    function forEachDayKey(startKey, endKeyInclusive, fn) {
+      if (!startKey || !endKeyInclusive) return;
+      let key = startKey;
+      while (dayKeyToUtcMs(key) <= dayKeyToUtcMs(endKeyInclusive)) {
+        fn(key);
+        key = addDaysToDayKey(key, 1);
+      }
+    }
+
+    function intervalTouchedDayKeys(startIso, endIso) {
+      const startKey = isoDayKey(startIso);
+      const endKey = isoDayKey(endIso);
+      if (!startKey || !endKey) return [];
+      const lastKey = isIsoMidnight(endIso) ? prevDayKey(endKey) : endKey;
+      if (dayKeyToUtcMs(lastKey) < dayKeyToUtcMs(startKey)) return [];
+      const keys = [];
+      forEachDayKey(startKey, lastKey, (k) => keys.push(k));
+      return keys;
+    }
+
+    function derivePlanWindow(plan) {
+      const points = [];
+      (plan.blocks || []).forEach(b => {
+        points.push(new Date(b.start).getTime(), new Date(b.end).getTime());
+      });
+      (plan.couple_time_window_outcomes || []).forEach(o => {
+        points.push(new Date(o.start).getTime(), new Date(o.end).getTime());
+      });
+      const valid = points.filter(Number.isFinite);
+      if (!valid.length) return null;
+      const startMs = Math.min(...valid);
+      const endMs = Math.max(...valid);
+      return {
+        startMs,
+        endMs,
+        totalMs: Math.max(endMs - startMs, 1),
+      };
+    }
+
+    function segmentStyle(startIso, endIso, windowInfo) {
+      const start = new Date(startIso).getTime();
+      const end = new Date(endIso).getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return 'left:0%;width:0%;';
+      const left = Math.max(0, Math.min(100, pct(start - windowInfo.startMs, windowInfo.totalMs)));
+      const right = Math.max(0, Math.min(100, pct(end - windowInfo.startMs, windowInfo.totalMs)));
+      const width = Math.max(right - left, 0.6);
+      return `left:${left.toFixed(3)}%;width:${width.toFixed(3)}%;`;
+    }
+
+    function markerStyle(atIso, windowInfo) {
+      const at = new Date(atIso).getTime();
+      if (!Number.isFinite(at)) return 'left:0%;';
+      const left = Math.max(0, Math.min(100, pct(at - windowInfo.startMs, windowInfo.totalMs)));
+      return `left:${left.toFixed(3)}%;`;
+    }
+
+    function renderPlanCalendar(plan) {
+      const windowInfo = derivePlanWindow(plan);
+      if (!windowInfo) return '';
+
+      const blocks = plan.blocks || [];
+      const outcomes = plan.couple_time_window_outcomes || [];
+      const requested = outcomes.reduce((acc, o) => acc + Number(o.requested_hours || 0), 0);
+      const covered = outcomes.reduce((acc, o) => acc + Number(o.covered_hours || 0), 0);
+      const blocked = outcomes.reduce((acc, o) => acc + Number(o.blocked_hours || 0), 0);
+      const coveragePct = requested > 0 ? pct(covered, requested).toFixed(1) : '0.0';
+      const showPartner = partnerEnabled();
+
+      const ownershipSegments = blocks.map((b, i) => {
+        const ownerName = String(b.owner || '').toLowerCase();
+        const ownerClass = ownerName === 'dad' ? 'owner-dad' : (ownerName === 'mum' ? 'owner-mum' : 'owner-none');
+        return `<div class="cal-segment ${ownerClass}" style="${segmentStyle(b.start, b.end, windowInfo)}" title="${esc(ownerTitle(b.owner))}: ${fmtDt(b.start)} to ${fmtDt(b.end)}"></div>`;
+      }).join('');
+
+      const handoverMarkers = blocks.slice(0, -1).map((b, i) =>
+        `<div class="handover-marker" style="${markerStyle(b.end, windowInfo)}" title="Handover ${i + 1}: ${fmtDt(b.end)}"></div>`
+      ).join('');
+
+      const availabilitySegments = outcomes.map(o => {
+        const req = Math.max(Number(o.requested_hours || 0), 0);
+        const cov = Math.max(Number(o.covered_hours || 0), 0);
+        const covPct = req > 0 ? pct(cov, req) : 0;
+        const blkPct = Math.max(0, 100 - covPct);
+        const statusClass = o.status === 'works' ? 'window-works' : 'window-does-not-work';
+        return `<div class="cal-segment partner-window ${statusClass}" style="${segmentStyle(o.start, o.end, windowInfo)}" title="${esc(displayShortId(o.interval_id))}: ${fmtDt(o.start)} to ${fmtDt(o.end)} | Covered ${esc(o.covered_hours)}h / ${esc(o.requested_hours)}h">
+          <span class="covered" style="width:${covPct.toFixed(2)}%"></span>
+          <span class="blocked" style="width:${blkPct.toFixed(2)}%"></span>
+        </div>`;
+      }).join('');
+
+      return `<div class="plan-calendar">
+        <div class="calendar-head">
+          <strong>Visual Calendar</strong>
+          <span>${fmtDateFromMs(windowInfo.startMs)} to ${fmtDateFromMs(windowInfo.endMs)}</span>
+        </div>
+        <div class="calendar-row">
+          <div class="calendar-label">Parenting</div>
+          <div class="calendar-track ownership-track">
+            ${ownershipSegments}
+            ${handoverMarkers}
+          </div>
+        </div>
+        ${showPartner ? `<div class="calendar-row">
+          <div class="calendar-label">${esc(partnerName())} availability</div>
+          <div class="calendar-track availability-track">
+            ${availabilitySegments || '<div class="calendar-empty">No partner availability windows requested.</div>'}
+          </div>
+        </div>` : ''}
+        <p class="calendar-metrics">${showPartner ? `Requested: <strong>${requested.toFixed(1)}h</strong> | Time together: <strong>${covered.toFixed(1)}h</strong> (${coveragePct}%) | Not possible: <strong>${blocked.toFixed(1)}h</strong> | ` : ''}Handovers: <strong>${Math.max(blocks.length - 1, 0)}</strong></p>
+        <div class="calendar-legend">${showPartner ? `
+          <span><i class="swatch owner-dad"></i>${esc(dadTitle())} block</span>
+          <span><i class="swatch owner-mum"></i>${esc(mumTitle())} block</span>
+          <span><i class="swatch covered"></i>Together time available</span>
+          <span><i class="swatch blocked"></i>Partner unavailable / Dad has child</span>
+          <span><i class="swatch handover"></i>Handover</span>` : `
+          <span><i class="swatch owner-dad"></i>${esc(dadTitle())} block</span>
+          <span><i class="swatch owner-mum"></i>${esc(mumTitle())} block</span>
+          <span><i class="swatch handover"></i>Handover</span>`}
+        </div>
+      </div>`;
+    }
+
+    function buildDailyPlanData(plan) {
+      const blocks = plan.blocks || [];
+      const outcomes = plan.couple_time_window_outcomes || [];
+
+      const dayData = new Map();
+      const blockStartKeys = blocks.map(b => isoDayKey(b.start)).filter(Boolean);
+      const blockLastKeys = blocks.map(b => {
+        const touched = intervalTouchedDayKeys(b.start, b.end);
+        return touched.length ? touched[touched.length - 1] : null;
+      }).filter(Boolean);
+      const outcomeStartKeys = outcomes.map(o => isoDayKey(o.start)).filter(Boolean);
+      const outcomeLastKeys = outcomes.map(o => {
+        const touched = intervalTouchedDayKeys(o.start, o.end);
+        return touched.length ? touched[touched.length - 1] : null;
+      }).filter(Boolean);
+
+      const allStarts = [...blockStartKeys, ...outcomeStartKeys];
+      const allEnds = [...blockLastKeys, ...outcomeLastKeys];
+      if (!allStarts.length || !allEnds.length) return { dayData, startKey: null, endKey: null };
+
+      const startKey = allStarts.reduce((a, b) => dayKeyToUtcMs(a) <= dayKeyToUtcMs(b) ? a : b);
+      const endKey = allEnds.reduce((a, b) => dayKeyToUtcMs(a) >= dayKeyToUtcMs(b) ? a : b);
+
+      forEachDayKey(startKey, endKey, (key) => {
+        dayData.set(key, {
+          key,
+          dateMs: dayKeyToUtcMs(key),
+          owner: '',
+          requestedMs: 0,
+          coveredMs: 0,
+          blockedMs: 0,
+          handoverCount: 0,
+          handoverFrom: '',
+          handoverTo: '',
+        });
+      });
+
+      blocks.forEach((b) => {
+        intervalTouchedDayKeys(b.start, b.end).forEach((key) => {
+          const row = dayData.get(key);
+          if (row) row.owner = b.owner || row.owner;
+        });
+      });
+
+      (blocks.slice(0, -1)).forEach((b, i) => {
+        const key = isoDayKey(b.end);
+        const row = dayData.get(key);
+        if (row) {
+          row.handoverCount += 1;
+          row.handoverFrom = b.owner || '';
+          row.handoverTo = (blocks[i + 1] && blocks[i + 1].owner) || '';
+        }
+      });
+
+      outcomes.forEach(o => {
+        const touched = intervalTouchedDayKeys(o.start, o.end);
+        if (!touched.length) return;
+
+        const oStartMs = new Date(o.start).getTime();
+        const oEndMs   = new Date(o.end).getTime();
+
+        touched.forEach((key) => {
+          const row = dayData.get(key);
+          if (!row) return;
+
+          // Clamp outcome window to this calendar day
+          const dayStartMs = dayKeyToUtcMs(key);
+          const dayEndMs   = dayStartMs + 86400000;
+          const segStartMs = Math.max(dayStartMs, oStartMs);
+          const segEndMs   = Math.min(dayEndMs, oEndMs);
+          if (segEndMs <= segStartMs) return;
+
+          const segDurMs = segEndMs - segStartMs;
+
+          // Couple time is only possible when Mum has the child (Dad is free).
+          // Compute how much of this day-segment overlaps with a Mum block.
+          let mumMs = 0;
+          blocks.forEach(b => {
+            if (String(b.owner || '').toLowerCase() !== 'mum') return;
+            const bStartMs = new Date(b.start).getTime();
+            const bEndMs   = new Date(b.end).getTime();
+            mumMs += Math.max(0, Math.min(segEndMs, bEndMs) - Math.max(segStartMs, bStartMs));
+          });
+
+          row.requestedMs += segDurMs;
+          row.coveredMs   += mumMs;
+          row.blockedMs   += (segDurMs - mumMs);
+        });
+      });
+
+      return { dayData, startKey, endKey };
+    }
+
+    function renderMonthCalendar(plan) {
+      const built = buildDailyPlanData(plan);
+      if (!built.startKey || !built.endKey) return '';
+
+      const dayData = built.dayData;
+      const showPartner = partnerEnabled();
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      const weekdayLabels = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+
+      const monthStartMs = dayKeyToUtcMs(built.startKey);
+      const monthEndMs = dayKeyToUtcMs(built.endKey);
+      const monthStart = new Date(monthStartMs);
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+
+      const monthEnd = new Date(monthEndMs);
+      monthEnd.setUTCDate(1);
+      monthEnd.setUTCHours(0, 0, 0, 0);
+
+      const monthTables = [];
+      const cursor = new Date(monthStart.getTime());
+      while (cursor <= monthEnd) {
+        const year = cursor.getUTCFullYear();
+        const month = cursor.getUTCMonth();
+        const first = new Date(Date.UTC(year, month, 1));
+        const firstWeekdayMon = (first.getUTCDay() + 6) % 7;
+        const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+
+        const cells = [];
+        for (let i = 0; i < firstWeekdayMon; i += 1) {
+          cells.push('<div class="month-cell month-empty" aria-hidden="true"></div>');
+        }
+
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const d = new Date(Date.UTC(year, month, day));
+          const key = toDayKeyFromDateParts(year, month + 1, day);
+          const row = dayData.get(key);
+
+          if (!row) {
+            cells.push(`<div class="month-cell month-outside"><span class="day-num">${day}</span></div>`);
+            continue;
+          }
+
+          const ownerClass = String(row.owner || '').toLowerCase() === 'dad' ? 'owner-dad' : (String(row.owner || '').toLowerCase() === 'mum' ? 'owner-mum' : 'owner-none');
+          const hasCovered = row.coveredMs > 0;
+          const hasBlocked = row.blockedMs > 0;
+          const markers = [
+            hasCovered ? '<span class="day-dot covered" title="Together time: Dad is free while child is with Mum"></span>' : '',
+            hasBlocked ? `<span class="day-dot blocked" title="${ownerClass === 'owner-dad' ? 'Dad has child – together time not possible' : 'Preet unavailable this day'}"></span>` : '',
+          ].join('');
+          const title = [
+            `${fmtDateOnly(d.toISOString())}`,
+            `Parenting owner: ${ownerTitle(row.owner)}`,
+            ...(showPartner ? [
+              `${partnerName()} requested: ${(row.requestedMs / 3600000).toFixed(1)}h`,
+              `Time together: ${(row.coveredMs / 3600000).toFixed(1)}h`,
+              `Blocked: ${(row.blockedMs / 3600000).toFixed(1)}h`,
+            ] : []),
+            `Handovers: ${row.handoverCount}`,
+          ].join(' | ');
+
+          let handoverBg = '';
+          if (row.handoverCount > 0) {
+            const ownerBgColor = o => {
+              const lo = String(o || '').toLowerCase();
+              if (lo === 'dad') return 'color-mix(in srgb, var(--this-parent-color) 20%, white)';
+              if (lo === 'mum') return 'color-mix(in srgb, var(--other-parent-color) 20%, white)';
+              return '#fff';
+            };
+            handoverBg = ` style="background:linear-gradient(to right,${ownerBgColor(row.handoverFrom)} 50%,${ownerBgColor(row.handoverTo)} 50%)"`;
+          }
+
+          cells.push(`<div class="month-cell ${ownerClass}${hasCovered ? ' has-covered' : ''}${hasBlocked ? ' has-blocked' : ''}${row.handoverCount > 0 ? ' has-handover' : ''}" title="${esc(title)}"${handoverBg}><span class="day-num">${day}</span><span class="day-dots">${markers}</span></div>`);
+        }
+
+        monthTables.push(`<section class="month-block">
+          <h5>${monthNames[month]} ${year}</h5>
+          <div class="month-weekdays">${weekdayLabels.map(w => `<span>${w}</span>`).join('')}</div>
+          <div class="month-grid">${cells.join('')}</div>
+        </section>`);
+
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+      }
+
+      return `<div class="plan-month-calendars">
+        <div class="month-calendar-head">Month Calendar View</div>
+        <div class="month-calendar-legend">${showPartner ? `
+          <span><i class="swatch owner-dad"></i>${esc(dadTitle())} has child</span>
+          <span><i class="swatch owner-mum"></i>${esc(mumTitle())} has child</span>
+          <span><i class="swatch covered"></i>Together time available</span>
+          <span><i class="swatch blocked"></i>Together time blocked</span>
+          <span><i class="swatch handover-split"></i>Handover day</span>` : `
+          <span><i class="swatch owner-dad"></i>${esc(dadTitle())} has child</span>
+          <span><i class="swatch owner-mum"></i>${esc(mumTitle())} has child</span>
+          <span><i class="swatch handover-split"></i>Handover day</span>`}
+        </div>
+        <div class="month-calendar-list">${monthTables.join('')}</div>
+      </div>`;
+    }
+
+    function coupleWindowOutcomeTable(items) {
+      if (!items || !items.length) return '<em>No requested couple-time windows provided.</em>';
+      const rows = items.map(i => {
+        const statusText = i.status === 'works' ? 'Works' : 'Does not work';
+        const statusClass = i.status === 'works' ? 'badge-ok' : 'badge-err';
+        return `<tr>
+          <td>${esc(displayShortId(i.interval_id))}</td>
+          <td>${fmtDt(i.start)} to ${fmtDt(i.end)}</td>
+          <td><span class="badge ${statusClass}">${esc(statusText)}</span></td>
+          <td>${esc(i.covered_hours)} / ${esc(i.requested_hours)} h</td>
+          <td>${esc(i.blocked_hours)} h</td>
+          <td>${esc(i.reason)}</td>
+        </tr>`;
+      }).join('');
+      return `<table class="data-table outcomes-table"><thead><tr><th>ID</th><th>Window</th><th>Status</th><th>Coverage</th><th>Blocked</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function calendarExportButtons(plan, runId) {
+      if (!runId || !plan || !plan.plan_id) return '';
+      const icalPath = `/plan/${encodeURIComponent(runId)}/ical?plan_id=${encodeURIComponent(plan.plan_id)}`;
+      const webcalUrl = `webcal://${window.location.host}${icalPath}`;
+      const gcalSubscribeUrl = `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcalUrl)}`;
+      return `<div class="calendar-export-actions">
+        <a class="btn-cal-export btn-ical-download" href="${esc(icalPath)}" download>&#x1F4C5; Download .ics</a>
+        <a class="btn-cal-export btn-gcal-subscribe" href="${esc(gcalSubscribeUrl)}" target="_blank" rel="noopener noreferrer">&#x1F4C6; Add to Google Calendar</a>
+      </div>`;
+    }
+
+    function scheduleActionButtons(plan) {
+      const planId = esc(plan?.plan_id || '');
+      if (!planId) return '';
+      return `<div class="schedule-actions">
+        <button type="button" class="btn-copy-schedule" data-schedule-action="copy" data-plan-id="${planId}">Copy schedule</button>
+        <button type="button" class="btn-copy-image-schedule" data-schedule-action="copy-image" data-plan-id="${planId}">Copy as image</button>
+        <button type="button" class="btn-print-schedule" data-schedule-action="print" data-plan-id="${planId}">Print schedule</button>
+      </div>`;
+    }
+
+    function scheduleClipboardPlainText(plan) {
+      const blocks = (plan.blocks || []).map((b, i) =>
+        `Block ${i + 1}: ${ownerTitle(b.owner)} — ${fmtDt(b.start)} to ${fmtDt(b.end)}`
+      ).join('\n');
+      return [
+        `CoParenTime schedule ${plan.plan_id}`,
+        '',
+        `Couple-time status: ${Number(plan.overlap_hours || 0) > 0 ? 'Works' : 'Does not work'}`,
+        `Fairness gap: ${plan.fairness_gap_days} days`,
+        `Couple-time overlap: ${plan.overlap_hours} h`,
+        `Transitions: ${plan.transitions}`,
+        `Fragmentation: ${plan.fragmentation}`,
+        `Score: ${typeof plan.score === 'number' ? plan.score.toFixed(1) : plan.score}`,
+        '',
+        'Parenting blocks:',
+        blocks || 'None',
+      ].join('\n');
+    }
+
+    function scheduleClipboardHtml(plan) {
+      const blockItems = (plan.blocks || []).map((b, i) =>
+        `<li>Block ${i + 1}: ${esc(ownerTitle(b.owner))} — ${esc(fmtDt(b.start))} to ${esc(fmtDt(b.end))}</li>`
+      ).join('');
+      return `<div>
+        <h3>CoParenTime schedule ${esc(plan.plan_id)}</h3>
+        <p>
+          Couple-time status: <strong>${Number(plan.overlap_hours || 0) > 0 ? 'Works' : 'Does not work'}</strong><br>
+          Fairness gap: <strong>${esc(plan.fairness_gap_days)} days</strong><br>
+          Couple-time overlap: <strong>${esc(plan.overlap_hours)} h</strong><br>
+          Transitions: <strong>${esc(plan.transitions)}</strong><br>
+          Fragmentation: <strong>${esc(plan.fragmentation)}</strong><br>
+          Score: <strong>${esc(typeof plan.score === 'number' ? plan.score.toFixed(1) : plan.score)}</strong>
+        </p>
+        <h4>Parenting blocks</h4>
+        ${blockItems ? `<ul>${blockItems}</ul>` : '<p>None</p>'}
+      </div>`;
+    }
+
+    async function copyScheduleToClipboard(plan) {
+      const plain = scheduleClipboardPlainText(plan);
+      const html = scheduleClipboardHtml(plan);
+      if (navigator.clipboard?.write && window.ClipboardItem) {
+        const item = new ClipboardItem({
+          'text/plain': new Blob([plain], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        });
+        await navigator.clipboard.write([item]);
+        return;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(plain);
+        return;
+      }
+      const helper = document.createElement('textarea');
+      helper.value = plain;
+      helper.setAttribute('readonly', '');
+      helper.style.position = 'fixed';
+      helper.style.left = '-9999px';
+      document.body.appendChild(helper);
+      helper.select();
+      document.execCommand('copy');
+      document.body.removeChild(helper);
+    }
+
+    let scheduleCaptureStylesPromise = null;
+    function scheduleCaptureStylesheet() {
+      if (scheduleCaptureStylesPromise) return scheduleCaptureStylesPromise;
+      // Try to get CSS text from loaded same-origin stylesheets
+      const fromLoadedStylesheets = [];
+      for (const sheet of Array.from(document.styleSheets || [])) {
+        try {
+          const rules = Array.from(sheet.cssRules || []);
+          if (rules.length) {
+            fromLoadedStylesheets.push(rules.map(rule => rule.cssText).join('\n'));
+          }
+        } catch (_) {}
+      }
+      const loadedText = fromLoadedStylesheets.join('\n');
+      if (loadedText) {
+        scheduleCaptureStylesPromise = Promise.resolve(loadedText);
+        return scheduleCaptureStylesPromise;
+      }
+      // Fallback: fetch the stylesheet directly
+      const stylesheetHref = document.querySelector('link[href*="/static/style.css"]')?.href || '/static/style.css';
+      scheduleCaptureStylesPromise = fetch(stylesheetHref)
+        .then((res) => (res.ok ? res.text() : ''))
+        .catch(() => '');
+      return scheduleCaptureStylesPromise;
+    }
+
+    function scheduleCaptureCssVarOverrides() {
+      // Read runtime CSS variable values (may differ from static stylesheet defaults)
+      const computed = window.getComputedStyle(document.documentElement);
+      const vars = [];
+      for (let i = 0; i < computed.length; i++) {
+        const prop = computed[i];
+        if (prop.startsWith('--')) {
+          vars.push(`  ${prop}: ${computed.getPropertyValue(prop).trim()};`);
+        }
+      }
+      return vars.length ? `:root {\n${vars.join('\n')}\n}` : '';
+    }
+
+    async function scheduleCardImageBlob(cardEl) {
+      const printable = cardEl.cloneNode(true);
+      printable.querySelectorAll('.plan-actions').forEach(el => el.remove());
+      const rect = cardEl.getBoundingClientRect();
+      const width = Math.max(Math.ceil(rect.width), 640);
+      const height = Math.max(Math.ceil(rect.height), 400);
+      printable.style.width = `${width}px`;
+      printable.style.margin = '0';
+      // `body` selectors do not apply inside the SVG foreignObject fragment,
+      // so carry base typography explicitly from the live document.
+      const bodyComputed = window.getComputedStyle(document.body);
+      const wrapperTextStyle = [
+        `font-family:${bodyComputed.fontFamily}`,
+        `font-size:${bodyComputed.fontSize}`,
+        `line-height:${bodyComputed.lineHeight}`,
+        `color:${bodyComputed.color}`,
+      ].join(';').replace(/"/g, '&quot;');
+      // Stylesheet CSS first, then computed var overrides AFTER so they win over the static :root block
+      const sheetText = await scheduleCaptureStylesheet();
+      const varOverrides = scheduleCaptureCssVarOverrides();
+      const styleText = (sheetText + (varOverrides ? '\n' + varOverrides : '')).replace(/<\/style/gi, '<\\/style');
+      // Style must be a direct SVG child, not inside foreignObject, for reliable rendering in image context
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <style>${styleText}</style>
+  <foreignObject x="0" y="0" width="100%" height="100%">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="background:#fff;padding:0;margin:0;${wrapperTextStyle}">
+      ${printable.outerHTML.replace(/&nbsp;/g, '&#160;')}
+    </div>
+  </foreignObject>
+</svg>`;
+
+      const image = new Image();
+      image.decoding = 'async';
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error('Unable to render image for this schedule.'));
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      });
+
+      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(width * scale);
+      canvas.height = Math.ceil(height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Unable to create image canvas.');
+      }
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error('Unable to encode schedule image.'));
+            return;
+          }
+          resolve(blob);
+        }, 'image/png');
+      });
+    }
+
+    async function copyScheduleCardAsImage(cardEl) {
+      if (!(navigator.clipboard?.write && window.ClipboardItem)) {
+        throw new Error('Copy as image is not supported in this browser.');
+      }
+      const imageBlob = await scheduleCardImageBlob(cardEl);
+      await navigator.clipboard.write([new ClipboardItem({
+        'image/png': imageBlob,
+      })]);
+    }
+
+    function printScheduleCard(cardEl, plan) {
+      const printable = cardEl.cloneNode(true);
+      printable.querySelectorAll('.schedule-actions').forEach(el => el.remove());
+      const printWindow = window.open('about:blank', '_blank');
+      if (!printWindow) {
+        throw new Error('Unable to open print dialog. Please allow pop-ups and try again.');
+      }
+      const stylesheetHref = document.querySelector('link[href*="/static/style.css"]')?.href || '/static/style.css';
+      printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Schedule ${esc(plan.plan_id)}</title>
+  <link rel="stylesheet" href="${esc(stylesheetHref)}" />
+  <style>body{background:#fff;} .shell{max-width:100%;padding:0;} .calendar-export-actions{display:none;}</style>
+</head>
+<body>
+  <main class="shell">
+    <section class="panel">${printable.innerHTML}</section>
+  </main>
+</body>
+</html>`);
+      printWindow.document.close();
+      let printed = false;
+      const triggerPrint = () => {
+        if (printed) return;
+        printed = true;
+        printWindow.focus();
+        printWindow.print();
+        printWindow.close();
+      };
+      printWindow.addEventListener('load', () => {
+        setTimeout(triggerPrint, 100);
+      }, { once: true });
+      setTimeout(triggerPrint, 500);
+    }
+
+    function planCard(label, plan, badge, runId) {
+      if (!plan) return '';
+      renderedPlansById.set(String(plan.plan_id || ''), plan);
+      const coupleStatus = Number(plan.overlap_hours || 0) > 0 ? 'Works' : 'Does not work';
+      return `<div class="sub-card plan-card" data-plan-id="${esc(plan.plan_id)}">
+        <h4>${esc(label)} <span class="badge ${esc(badge)}">${esc(plan.plan_id)}</span></h4>
+        <p class="plan-meta">
+          Couple-time status: <strong>${esc(coupleStatus)}</strong> &nbsp;|
+          Fairness gap: <strong>${esc(plan.fairness_gap_days)} days</strong> &nbsp;|
+          Couple-time: <strong>${esc(plan.overlap_hours)} h</strong> &nbsp;|
+          Transitions: <strong>${esc(plan.transitions)}</strong> &nbsp;|
+          Fragmentation: <strong>${esc(plan.fragmentation)}</strong> &nbsp;|
+          Score: <strong>${esc(typeof plan.score === 'number' ? plan.score.toFixed(1) : plan.score)}</strong>
+        </p>
+        <div class="plan-visual" data-visual-kind="timeline">${renderPlanCalendar(plan)}</div>
+        <div class="plan-visual" data-visual-kind="calendar">${renderMonthCalendar(plan)}</div>
+        <details class="ical-details">
+          <summary>Requested couple-time windows — click to expand</summary>
+          ${coupleWindowOutcomeTable(plan.couple_time_window_outcomes)}
+        </details>
+        ${blockTable(plan.blocks)}
+        <div class="plan-actions">
+          ${calendarExportButtons(plan, runId)}
+          ${scheduleActionButtons(plan)}
+        </div>
+      </div>`;
+    }
+
+    function applyVisualMode(mode) {
+      currentVisualMode = normalizeVisualMode(mode);
+      const showTimeline = currentVisualMode === 'timeline' || currentVisualMode === 'both';
+      const showCalendar = currentVisualMode === 'calendar' || currentVisualMode === 'both';
+
+      document.querySelectorAll('[data-visual-kind="timeline"]').forEach(el => {
+        el.hidden = !showTimeline;
+      });
+      document.querySelectorAll('[data-visual-kind="calendar"]').forEach(el => {
+        el.hidden = !showCalendar;
+      });
+
+      if (scheduleVisualModeBar) {
+        scheduleVisualModeBar.querySelectorAll('[data-visual-mode]').forEach(btn => {
+          btn.classList.toggle('active', btn.getAttribute('data-visual-mode') === currentVisualMode);
+        });
+      }
+    }
+
+    function wireVisualModeToggle() {
+      if (!scheduleVisualModeBar) return;
+      scheduleVisualModeBar.addEventListener('click', (event) => {
+        const target = event.target.closest('[data-visual-mode]');
+        if (!target) return;
+        applyVisualMode(target.getAttribute('data-visual-mode'));
+      });
+    }
+
+    function parseAuditSection(rows) {
+      if (!rows || !rows.length) return '<em>None</em>';
+      const partner = rows.filter(r => r.source !== 'ical');
+      const ical    = rows.filter(r => r.source === 'ical');
+
+      function tableRows(list) {
+        return list.map(r =>
+          `<tr><td>${esc(displayShortId(r.id))}</td><td>${esc(r.type)}</td><td>${fmtDt(r.start)}</td><td>${fmtDt(r.end)}</td><td>${esc(r.confidence)}</td></tr>`
+        ).join('');
+      }
+      const thead = `<thead><tr><th>ID</th><th>Type</th><th>Start</th><th>End</th><th>Conf.</th></tr></thead>`;
+
+      let html = '';
+      if (partnerEnabled() && partner.length) {
+        html += `<p class="audit-label">${esc(partnerName())}-text intervals (${partner.length})</p>`;
+        html += `<table class="data-table">${thead}<tbody>${tableRows(partner)}</tbody></table>`;
+      }
+      if (ical.length) {
+        html += `<details class="ical-details"><summary>iCal hard exclusions in window (${ical.length}) — click to expand</summary>`;
+        html += `<table class="data-table">${thead}<tbody>${tableRows(ical)}</tbody></table></details>`;
+      }
+      return html;
+    }
+
+    function constraintAuditSection(rows) {
+      if (!rows || !rows.length) return '<em>None</em>';
+      const valid  = rows.filter(r => r.status === 'valid');
+      const failed = rows.filter(r => r.status !== 'valid');
+      let html = `<p class="audit-label">${valid.length} valid &nbsp;|&nbsp; ${failed.length} disqualified</p>`;
+      if (failed.length) {
+        const tr = failed.map(r =>
+          `<tr><td>${esc(r.plan_id)}</td><td>${esc(r.reason)}</td></tr>`
+        ).join('');
+        html += `<details class="ical-details"><summary>Disqualified plans (${failed.length}) — click to expand</summary>`;
+        html += `<table class="data-table"><thead><tr><th>Plan</th><th>Reason</th></tr></thead><tbody>${tr}</tbody></table></details>`;
+      }
+      return html;
+    }
+
+    function planCardsForView(plans, badge, emptyText, runId) {
+      if (!plans || !plans.length) {
+        return `<div class="sub-card"><em>${esc(emptyText)}</em></div>`;
+      }
+      return plans.map((plan, i) => {
+        const label = i === 0 ? 'Primary Schedule' : `Alternative ${String.fromCharCode(64 + i)}`;
+        return planCard(label, plan, badge, runId);
+      }).join('');
+    }
+
+    function scheduleOptionsSection(result) {
+      renderedPlansById.clear();
+      const viewData = result.couple_time_views || {};
+      let works = viewData.works || [];
+      let doesntWork = viewData.doesnt_work || [];
+
+      if (!works.length && !doesntWork.length) {
+        const fallback = [result.primary, ...(result.alternatives || [])].filter(Boolean);
+        works = fallback.filter(p => Number(p.overlap_hours || 0) > 0);
+        doesntWork = fallback.filter(p => Number(p.overlap_hours || 0) <= 0);
+      }
+
+      if (!works.length && !doesntWork.length) {
+        return '<div class="sub-card"><em>No schedule options available.</em></div>';
+      }
+
+      const runId = result.run_id || '';
+      let html = '';
+      if (works.length) {
+        html += planCardsForView(works, 'badge-ok', '', runId);
+      }
+      if (doesntWork.length) {
+        html += planCardsForView(doesntWork, 'badge-warn', '', runId);
+      }
+      return html;
+    }
+
+    resultCards.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-schedule-action]');
+      if (!button) return;
+      const planId = button.getAttribute('data-plan-id') || '';
+      const plan = renderedPlansById.get(planId);
+      const cardEl = button.closest('.plan-card');
+      if (!plan || !cardEl) return;
+      try {
+        const action = button.getAttribute('data-schedule-action');
+        if (action === 'copy') {
+          await copyScheduleToClipboard(plan);
+          statusMsg.textContent = `Copied schedule ${planId}`;
+          statusMsg.className = 'status-msg done';
+          return;
+        }
+        if (action === 'copy-image') {
+          await copyScheduleCardAsImage(cardEl);
+          statusMsg.textContent = `Copied schedule image ${planId}`;
+          statusMsg.className = 'status-msg done';
+          return;
+        }
+        printScheduleCard(cardEl, plan);
+      } catch (err) {
+        statusMsg.textContent = `\u274c ${err.message}`;
+        statusMsg.className = 'status-msg error';
+      }
+    });
+
+    function renderCards(result) {
+      const s = result.status;
+      let html = '';
+
+      // Input summary
+      const is = result.input_summary || {};
+      html += `<div class="sub-card"><h4>Input Summary</h4><dl class="kv">`;
+      for (const [k, v] of Object.entries(is)) {
+        html += `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
+      }
+      html += `</dl></div>`;
+
+      if (s === 'ok') {
+        html += scheduleOptionsSection(result);
+        const ro = result.relationship_optimization_audit || {};
+        html += `<details class="sub-card audit-collapsed"><summary>Auditing (hidden by default)</summary>`;
+        html += `<div class="audit-stack">`;
+        html += `<div class="sub-card"><h4>Parse Audit</h4>${parseAuditSection(result.parse_audit)}</div>`;
+        html += `<div class="sub-card"><h4>Relationship Optimisation Audit</h4><pre class="inline-pre">${esc(JSON.stringify(ro, null, 2))}</pre></div>`;
+        html += `<div class="sub-card"><h4>Constraint Audit</h4>${constraintAuditSection(result.constraint_audit)}</div>`;
+        html += `</div></details>`;
+      }
+
+      if (s === 'needs_clarification') {
+        html += `<div class="sub-card"><h4>Clarifications Required</h4><ul class="clarification-list">`;
+        (result.clarifications || []).forEach(c => {
+          html += `<li><strong>${esc(c.prompt)}</strong><br><code>${esc(c.raw_text)}</code></li>`;
+        });
+        html += `</ul></div>`;
+      }
+
+      if (s === 'blocked') {
+        html += `<details class="sub-card audit-collapsed"><summary>Auditing (hidden by default)</summary>`;
+        html += `<div class="audit-stack">`;
+        html += `<div class="sub-card"><h4>Constraint Audit</h4>${constraintAuditSection(result.constraint_audit)}</div>`;
+        html += `</div></details>`;
+      }
+
+      return html;
+    }
+
+    function renderSummary(result) {
+      const s = result.status;
+      if (s === 'ok') {
+        const p = result.primary;
+        const gap = p ? p.fairness_gap_days : '?';
+        const overlap = p ? p.overlap_hours : '?';
+        const worksCount = result.input_summary?.couple_time_working_count ?? '?';
+        const doesntCount = result.input_summary?.couple_time_not_working_count ?? '?';
+        return `<span class="badge badge-ok">Plan ready</span> ` +
+               `Fairness gap: <strong>${gap} days</strong> &mdash; ` +
+              (partnerEnabled()
+                ? `Couple-time overlap: <strong>${overlap} h</strong> &mdash; ` +
+                  `Candidates: <strong>${result.input_summary?.feasible_count ?? '?'}</strong> feasible ` +
+                  `(<strong>${worksCount}</strong> works, <strong>${doesntCount}</strong> does not work)`
+                : `Candidates: <strong>${result.input_summary?.feasible_count ?? '?'}</strong> feasible`);
+      }
+      if (s === 'needs_clarification') {
+        return `<span class="badge badge-warn">Clarification needed</span> ${(result.clarifications||[]).length} item(s) need resolving before a schedule can be generated.`;
+      }
+      if (s === 'blocked') {
+        return `<span class="badge badge-err">Blocked</span> No feasible candidates after constraint filtering.`;
+      }
+      return '';
+    }
+
+    function renderGoogleWarnings(result) {
+      if (!googleWarningBanner) return;
+      const warnings = result?.metadata?.google_calendar_warnings || [];
+      if (!warnings.length) {
+        googleWarningBanner.hidden = true;
+        googleWarningBanner.innerHTML = '';
+        return;
+      }
+
+      const list = warnings.map(w => `<li>${esc(w)}</li>`).join('');
+      googleWarningBanner.innerHTML =
+        `<strong>Google Calendar warnings</strong><ul>${list}</ul>`;
+      googleWarningBanner.hidden = false;
+    }
+
+    configurePartnerLabels();
+    applyVisualConfig();
+    configureHolidayPresetSelect();
+    configurePartnerKidFreeDefaults();
+    configureGoogleCalendarDefault();
+    wireSchooldayConfirmationSync();
+    syncSchooldayConfirmationCheckbox();
+    wireVisualModeToggle();
+    currentVisualMode = normalizeVisualMode(APP_CONFIG.schedule_visual_default || 'both');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setLoading(true);
+      resultPanel.hidden = true;
+      if (googleWarningBanner) {
+        googleWarningBanner.hidden = true;
+        googleWarningBanner.innerHTML = '';
+      }
+
+      const fd = new FormData(form);
+      const payload = {
+        holiday_start:   fd.get('holiday_start'),
+        holiday_end:     fd.get('holiday_end'),
+        partner_text:    partnerEnabled() ? (fd.get('partner_text') || '') : '',
+        ical_content:    fd.get('ical_content') || null,
+        google_calendar_ical_url: fd.get('google_calendar_ical_url') || null,
+        pre_holiday_schoolday_confirmed: fd.get('pre_holiday_schoolday_confirmed') === 'on',
+        options: { boundary_policy: 'Strict', terminal_exception: false },
+      };
+
+      try {
+        const res = await fetch('/plan/run', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          throw new Error(`Server error ${res.status}: ${res.statusText}`);
+        }
+
+        const data = await res.json();
+
+        resultSummary.innerHTML = renderSummary(data.result);
+        renderGoogleWarnings(data.result);
+        resultCards.innerHTML   = renderCards(data.result);
+        scheduleVisualModeBar.hidden = data.result.status !== 'ok';
+        applyVisualMode(currentVisualMode);
+
+        // Populate raw JSON lazily only when the details element is opened.
+        resultPre.textContent = '';
+        rawDetails.removeAttribute('open');
+        rawDetails.addEventListener('toggle', () => {
+          if (rawDetails.open && !resultPre.textContent) {
+            resultPre.textContent = JSON.stringify(data, null, 2);
+          }
+        }, { once: false });
+
+        resultPanel.hidden  = false;
+        statusMsg.textContent = 'Done';
+        statusMsg.className   = 'status-msg done';
+        resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (err) {
+        statusMsg.textContent = `\u274c Error: ${err.message}`;
+        statusMsg.className   = 'status-msg error';
+      } finally {
+        setLoading(false);
+      }
+    });
+  </script>
+</body>
+</html>
