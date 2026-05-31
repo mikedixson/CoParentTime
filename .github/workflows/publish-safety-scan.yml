@@ -1,0 +1,20 @@
+name: 'Publish Safety Scan'
+
+on:
+  push:
+    branches:
+      - 'main'
+  pull_request:
+
+jobs:
+  safety-scan:
+    runs-on: 'windows-latest'
+
+    steps:
+      - name: 'Checkout'
+        uses: 'actions/checkout@v4'
+
+      - name: 'Run tracked-file safety scan'
+        shell: 'pwsh'
+        run: |
+          .\scripts\public_safety_scan.ps1 -TrackedOnly
