@@ -22,11 +22,51 @@ def _parse_dt(raw: str) -> datetime:
     return dt.replace(tzinfo=TIMEZONE)
 
 
+def _validate_file_path(file_path: str, base_dir: Path | None = None) -> Path:
+    """Validate file path to prevent directory traversal attacks.
+    
+    Args:
+        file_path: The file path to validate
+        base_dir: Optional base directory to restrict files to. If None, uses current directory.
+        
+    Raises:
+        ValueError: If path is invalid or escapes base directory
+    """
+    if base_dir is None:
+        base_dir = Path.cwd()
+    
+    try:
+        resolved_path = Path(file_path).resolve()
+        base_dir_resolved = base_dir.resolve()
+        
+        # Check if resolved path is within base directory
+        try:
+            resolved_path.relative_to(base_dir_resolved)
+        except ValueError:
+            raise ValueError(f"Path traversal detected: {file_path}")
+        
+        # Check if file exists
+        if not resolved_path.exists():
+            raise ValueError(f"File not found: {file_path}")
+        
+        # Check if it's a file (not directory)
+        if not resolved_path.is_file():
+            raise ValueError(f"Path is not a file: {file_path}")
+        
+        return resolved_path
+    except (RuntimeError, OSError) as e:
+        raise ValueError(f"Invalid file path: {file_path}") from e
+
+
 def _read_ics(ical_content: str | None, ical_file_path: str | None) -> str:
     if ical_content:
         return ical_content
     if ical_file_path:
-        return Path(ical_file_path).read_text(encoding="utf-8")
+        try:
+            validated_path = _validate_file_path(ical_file_path)
+            return validated_path.read_text(encoding="utf-8")
+        except ValueError as e:
+            raise ValueError(f"Cannot read iCal file: {e}") from e
     return ""
 
 

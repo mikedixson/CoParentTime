@@ -866,7 +866,11 @@
         throw new Error('Unable to open print dialog. Please allow pop-ups and try again.');
       }
       const stylesheetHref = document.querySelector('link[href*="/static/style.css"]')?.href || '/static/style.css';
-      printWindow.document.write(`<!DOCTYPE html>
+      
+      // Use safer DOM API instead of innerHTML string concatenation
+      // to prevent any potential XSS issues with string interpolation
+      const printDoc = printWindow.document;
+      printDoc.write(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -877,11 +881,21 @@
 </head>
 <body>
   <main class="shell">
-    <section class="panel">${printable.innerHTML}</section>
+    <section class="panel"></section>
   </main>
 </body>
 </html>`);
-      printWindow.document.close();
+      printDoc.close();
+      
+      // Append the cloned content safely using DOM API instead of innerHTML
+      const panelEl = printWindow.document.querySelector('.panel');
+      if (panelEl && printable.childNodes.length > 0) {
+        // Clone each child node safely
+        printable.childNodes.forEach(node => {
+          panelEl.appendChild(node.cloneNode(true));
+        });
+      }
+      
       let printed = false;
       const triggerPrint = () => {
         if (printed) return;
