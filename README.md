@@ -38,7 +38,7 @@ All runs are reproducible, local-only, and privacy-respecting.
 - **Configurable fairness targets**: Default 50/50 split, or customize to e.g. 70/30
 - **Weighted optimization**: Tune between couple-time and fairness priorities
 - **Couple-time analysis**: See exactly where both parents are kid-free simultaneously
-- **Constraint-conflict explainer**: Understand why no feasible plan exists if constraints are over-constrained
+- **Conflict explanation**: Understand why no feasible plan exists if constraints are over-constrained
 
 ### Calendar & Availability
 - **Google Calendar integration**: Import hard exclusions via private iCal feed
@@ -240,25 +240,26 @@ pytest -q
 - Golden tests ensuring deterministic output consistency
 - Security tests for path validation and SSRF prevention
 
-## 📈 Future Roadmap
+## 📈 Roadmap & Future Development
 
-CoParentTime is actively developed. See [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) for upcoming features:
+CoParentTime is actively developed. See [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) for the complete feature roadmap.
 
-- Custom split targets (70/30, 25/75, etc.)
-- Lock specific dates before optimization
-- Enhanced what-if comparison modes
-- Holiday preset manager UI
-- Export to calendar formats
+### Currently Implemented
+- ✅ Core scheduling engine with deterministic optimization
+- ✅ Google Calendar integration (iCal import)
+- ✅ Partner availability parsing (free-text and structured input)
+- ✅ Custom fairness weighting (tune couple-time vs. fairness balance)
+- ✅ What-if comparison (compare two schedule options)
+- ✅ Image export (copy result cards as PNG)
+- ✅ iCalendar export (.ics files for each parent)
+- ✅ Custom split targets (configurable fairness targets like 70/30)
+- ✅ School holiday presets (save and reuse holiday windows)
+- ✅ Hard-constraint conflict detection (explain infeasible constraints)
 
-Current version includes:
-- [x] Core scheduling engine
-- [x] Google Calendar integration
-- [x] Partner availability parsing
-- [x] Custom fairness weighting
-- [x] What-if comparison
-- [x] Image export (copy as PNG)
-- [x] .ics calendar export
-- [x] Constraint conflict explainer
+### Planned Features
+- 🔄 Lock specific dates to a parent before optimization (manual override pins)
+- 🔄 Enhanced UI features and preset management
+- 🔄 Additional calendar export formats
 
 ## 📝 Architecture
 
