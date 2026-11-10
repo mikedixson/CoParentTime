@@ -1,4 +1,4 @@
-# CoParenTime MVP
+# CoParentTime MVP
 
 Local-only FastAPI MVP for deterministic co-parenting holiday planning with auditable outputs.
 
@@ -18,8 +18,8 @@ Local-only FastAPI MVP for deterministic co-parenting holiday planning with audi
    - `http://127.0.0.1:8000`
 
 ### VS Code tasks (Windows)
-- Use **Tasks: Run Task** -> **CoParenTime: Run App** (or **CoParenTime: Run App (Reload)**) to start the service in a task terminal.
-- Use **CoParenTime: Stop App** to stop this workspace's virtual-environment Uvicorn processes and their workers, including instances started outside VS Code tasks. If none are running, the task reports that and exits successfully.
+- Use **Tasks: Run Task** -> **CoParentTime: Run App** (or **CoParentTime: Run App (Reload)**) to start the service in a task terminal.
+- Use **CoParentTime: Stop App** to stop this workspace's virtual-environment Uvicorn processes and their workers, including instances started outside VS Code tasks. If none are running, the task reports that and exits successfully.
 - The stop task uses Windows process inspection; it is not supported on macOS/Linux.
 
 ## API

@@ -121,7 +121,7 @@ def test_generate_plan_ics_includes_calendar_name():
 
     ics = generate_plan_ics(result)
 
-    assert "X-WR-CALNAME:CoParenTime: 2026-08-01 to 2026-08-21" in ics
+    assert "X-WR-CALNAME:CoParentTime: 2026-08-01 to 2026-08-21" in ics
 
 
 def test_generate_plan_ics_uses_crlf_line_endings():

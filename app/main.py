@@ -21,7 +21,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="CoParenTime MVP", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="CoParentTime MVP", version="0.1.0", lifespan=lifespan)
 
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")

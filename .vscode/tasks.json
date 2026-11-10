@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "CoParenTime: Install Runtime Deps",
+      "label": "CoParentTime: Install Runtime Deps",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -15,7 +15,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Install Dev Deps",
+      "label": "CoParentTime: Install Dev Deps",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -27,7 +27,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Run App",
+      "label": "CoParentTime: Run App",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -40,7 +40,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Run App (Reload)",
+      "label": "CoParentTime: Run App (Reload)",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -53,7 +53,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Test",
+      "label": "CoParentTime: Test",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -66,7 +66,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Smoke API",
+      "label": "CoParentTime: Smoke API",
       "type": "shell",
       "command": "pwsh",
       "args": [
@@ -78,7 +78,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CoParenTime: Stop App",
+      "label": "CoParentTime: Stop App",
       "type": "shell",
       "command": "pwsh",
       "args": [

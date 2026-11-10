@@ -26,6 +26,8 @@ def test_home_includes_google_warning_banner_wiring():
     assert res.status_code == 200
     html = res.text
 
+    assert "<title>CoParentTime MVP</title>" in html
+    assert "<h1>CoParentTime Local Planner</h1>" in html
     assert 'id="googleWarningBanner"' in html
     assert "function renderGoogleWarnings(result)" in html
     assert "renderGoogleWarnings(data.result);" in html
@@ -438,7 +440,7 @@ def test_home_includes_schedule_copy_image_and_print_wiring():
     assert "Block ${i + 1}:" in clipboard_html
     assert "Couple-time status:" not in clipboard_html
     assert "Fairness gap:" not in clipboard_html
-    assert "CoParenTime schedule" not in clipboard_html
+    assert "CoParentTime schedule" not in clipboard_html
 
 
 @pytest.mark.parametrize("legacy_labels", [False, True])

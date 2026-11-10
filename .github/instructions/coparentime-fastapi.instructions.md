@@ -1,16 +1,16 @@
 ---
-description: "Use when modifying CoParenTime FastAPI app, config parsing, scheduling logic, or tests. Enforces local-first workflow, deterministic planning behavior, and project task conventions."
-name: "CoParenTime FastAPI Conventions"
+description: "Use when modifying CoParentTime FastAPI app, config parsing, scheduling logic, or tests. Enforces local-first workflow, deterministic planning behavior, and project task conventions."
+name: "CoParentTime FastAPI Conventions"
 applyTo: "app/**/*.py, tests/**/*.py, README.md"
 ---
-# CoParenTime FastAPI Conventions
+# CoParentTime FastAPI Conventions
 
 - Treat these conventions as default preferences; allow exceptions when the task explicitly needs a different approach.
 
 - Prefer workspace tasks over ad-hoc commands for routine workflows:
-  - `CoParenTime: Test`
-  - `CoParenTime: Run App`
-  - `CoParenTime: Run App (Reload)`
+  - `CoParentTime: Test`
+  - `CoParentTime: Run App`
+  - `CoParentTime: Run App (Reload)`
 - Use the project virtual environment interpreter for Python commands (`.venv/Scripts/python.exe` on Windows).
 
 - Preserve deterministic planning behavior unless the task explicitly requests behavior changes.
