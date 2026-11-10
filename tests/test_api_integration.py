@@ -576,5 +576,8 @@ def test_home_includes_unselected_following_weekend_control_and_sharing():
     assert 'following_weekend_parent: fd.get(' in html
     assert "configureFollowingWeekend();" in html
     assert "followingWeekendText(savedFollowingWeekend)," in html
-    assert html.count("${followingWeekendNote(savedFollowingWeekend)}") == 2
+    assert "${followingWeekendNote(savedFollowingWeekend)}" in html
+    assert "html += followingWeekendNote(savedFollowingWeekend);" in html
+    assert "const followingWeekend = followingWeekendText(savedFollowingWeekend);" in html
+    assert "${followingWeekend ? `<p>${esc(followingWeekend)}</p>` : ''}" in html
     assert "Information only; does not specify care before that Friday." not in html

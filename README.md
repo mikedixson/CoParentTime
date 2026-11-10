@@ -124,3 +124,10 @@ Example:
    - `pip install -r requirements-dev.txt`
 - Run:
    - `pytest -q`
+
+### Pull request checks
+The **Application Tests** GitHub Actions workflow runs on every pull request, pushes to `main`, and manual dispatches. Both Ubuntu and Windows use Python 3.12 to install runtime/development dependencies, check dependency compatibility, and run the entire pytest suite. JUnit results are uploaded per platform, including when tests fail.
+
+The suite covers planning rules and scoring, configuration, calendar parsing/export, API integration, persistence, and report generation. A startup smoke test also launches a real Uvicorn process with isolated temporary application files, verifies the health endpoint, homepage and stylesheet, and checks that startup created the SQLite tables. No local configuration, calendar credentials, or external services are required.
+
+The existing CodeQL, Python dependency-security, and tracked-file safety workflows remain separate. To block merging when application checks fail, configure a GitHub branch ruleset requiring both **Test Python 3.12 on ubuntu-latest** and **Test Python 3.12 on windows-latest** checks.
