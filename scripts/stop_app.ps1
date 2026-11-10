@@ -10,7 +10,7 @@ $appProcesses = @($processes | Where-Object {
 })
 
 if ($appProcesses.Count -eq 0) {
-    Write-Host 'No running CoParenTime instance found for this workspace.'
+    Write-Host 'No running CoParentTime instance found for this workspace.'
     exit 0
 }
 
@@ -38,12 +38,12 @@ foreach ($process in @($appProcesses) + @($processes | Where-Object {
     }
     try {
         Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-        Write-Host "Stopped CoParenTime process $($process.ProcessId)."
+        Write-Host "Stopped CoParentTime process $($process.ProcessId)."
     }
     catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
         if (Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)") {
             throw
         }
-        Write-Host "CoParenTime process $($process.ProcessId) has already exited."
+        Write-Host "CoParentTime process $($process.ProcessId) has already exited."
     }
 }

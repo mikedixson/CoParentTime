@@ -1,4 +1,4 @@
-# CoParenTime Feature Roadmap (Bang-for-Buck Order)
+# CoParentTime Feature Roadmap (Bang-for-Buck Order)
 
 Purpose: provide implementation-ready feature cards that can be spun into separate agent sessions.
 

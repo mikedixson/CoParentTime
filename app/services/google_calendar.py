@@ -97,7 +97,7 @@ def _normalize_google_calendar_url(url: str) -> str:
 
 def fetch_google_calendar_ics(url: str, timeout_seconds: int = 8) -> str:
     target = _normalize_google_calendar_url(url)
-    request = Request(target, headers={"User-Agent": "CoParenTime/1.0"})
+    request = Request(target, headers={"User-Agent": "CoParentTime/1.0"})
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read()

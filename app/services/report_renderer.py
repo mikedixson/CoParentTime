@@ -40,7 +40,7 @@ def _candidate_to_table(candidate: dict, christmas: ChristmasContext | None = No
 
 def render_markdown(result: PlanResultPayload) -> str:
     parts = []
-    parts.append("# CoParenTime Plan Result")
+    parts.append("# CoParentTime Plan Result")
     parts.append("## Input Summary")
     parts.append("```json\n" + json.dumps(result.input_summary, indent=2) + "\n```")
 

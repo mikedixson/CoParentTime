@@ -83,10 +83,10 @@ def generate_plan_ics(result: PlanResultPayload, plan_id: str | None = None) -> 
     lines: list[str] = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//CoParenTime//Schedule//EN",
+        "PRODID:-//CoParentTime//Schedule//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        _fold_line(f"X-WR-CALNAME:CoParenTime: {planning_period}"),
+        _fold_line(f"X-WR-CALNAME:CoParentTime: {planning_period}"),
     ]
 
     if plan is not None:
@@ -96,7 +96,7 @@ def generate_plan_ics(result: PlanResultPayload, plan_id: str | None = None) -> 
             dtend = _format_dt(block.end)
             summary = f"{block.owner} parenting block"
             description = (
-                f"CoParenTime schedule block\\n"
+                f"CoParentTime schedule block\\n"
                 f"Plan: {plan.plan_id}\\n"
                 f"Fairness gap: {plan.fairness_gap_days} days"
             )
