@@ -47,6 +47,42 @@
           Pre-holiday school pick-up handover confirmed
         </label>
 
+        <fieldset id="christmasControl" class="following-weekend-control" aria-describedby="christmasHelp christmasPreview" hidden>
+          <legend>Christmas Day</legend>
+          <p id="christmasHelp">Who has the child for the whole of 25 December? Leave unselected to let the planner choose.
+            A configured Christmas split is honoured either way.</p>
+          <div class="weekend-options">
+            <label class="weekend-option this-parent-option">
+              <input type="radio" name="christmas_day_parent" value="this_parent" />
+              <span id="christmasThisParent">This parent</span>
+            </label>
+            <label class="weekend-option other-parent-option">
+              <input type="radio" name="christmas_day_parent" value="other_parent" />
+              <span id="christmasOtherParent">Other parent</span>
+            </label>
+            <button type="button" class="toggle-btn" id="clearChristmasParent">Clear selection</button>
+          </div>
+          <p id="christmasPreview" aria-live="polite"></p>
+        </fieldset>
+
+        <fieldset class="following-weekend-control" aria-describedby="followingWeekendHelp followingWeekendPreview">
+          <legend>Following weekend</legend>
+          <p id="followingWeekendHelp">Who is looking after the child for the first Friday-Sunday weekend strictly after the plan ends?
+            Information only; the planned schedule is unchanged. Run Plan again to save any changes.</p>
+          <div class="weekend-options">
+            <label class="weekend-option this-parent-option">
+              <input type="radio" name="following_weekend_parent" value="this_parent" />
+              <span id="followingWeekendThisParent">This parent</span>
+            </label>
+            <label class="weekend-option other-parent-option">
+              <input type="radio" name="following_weekend_parent" value="other_parent" />
+              <span id="followingWeekendOtherParent">Other parent</span>
+            </label>
+            <button type="button" class="toggle-btn" id="clearFollowingWeekend">Clear selection</button>
+          </div>
+          <p id="followingWeekendPreview" aria-live="polite"></p>
+        </fieldset>
+
         <div class="submit-row">
           <button type="submit" id="submitBtn">Run Plan</button>
           <span class="status-msg" id="statusMsg" aria-live="polite"></span>
@@ -94,6 +130,8 @@
     const holidayPreset = document.getElementById('holidayPreset');
     let currentVisualMode = 'both';
     const renderedPlansById = new Map();
+    let savedFollowingWeekend = null;
+    let savedChristmas = null;
 
     function partnerEnabled() {
       const raw = APP_CONFIG.partner_enabled;
@@ -189,11 +227,30 @@
         if (!chosen) return;
         form.elements['holiday_start'].value = chosen.start;
         form.elements['holiday_end'].value = chosen.end;
+        updateFollowingWeekendPreview();
+        updateChristmasControl();
       });
 
-      if (ranges.length) {
-        form.elements['holiday_start'].value = ranges[0].start;
-        form.elements['holiday_end'].value = ranges[0].end;
+      const todayParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/London',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).formatToParts(new Date());
+      const today = [
+        todayParts.find(part => part.type === 'year').value,
+        todayParts.find(part => part.type === 'month').value,
+        todayParts.find(part => part.type === 'day').value
+      ].join('-');
+      const closestIndex = ranges.reduce((closest, range, idx) => {
+        if (range.end < today) return closest;
+        if (closest < 0 || range.start < ranges[closest].start) return idx;
+        return closest;
+      }, -1);
+
+      if (closestIndex >= 0) {
+        holidayPreset.value = String(closestIndex);
+        holidayPreset.dispatchEvent(new Event('change'));
       }
     }
 
@@ -236,6 +293,137 @@
       if (!startInput) return;
       startInput.addEventListener('change', syncSchooldayConfirmationCheckbox);
       startInput.addEventListener('input', syncSchooldayConfirmationCheckbox);
+    }
+
+    function followingWeekendText(weekend) {
+      if (!weekend) return '';
+      return `Following weekend (Friday ${weekend.start} to Sunday ${weekend.end}): ${weekend.parent ? weekend.parent_label : 'Not specified'}.`;
+    }
+
+    function followingWeekendNote(weekend) {
+      const text = followingWeekendText(weekend);
+      return text ? `<p class="following-weekend-note">${esc(text)}</p>` : '';
+    }
+
+    function updateFollowingWeekendPreview() {
+      const endDate = form.elements['holiday_end'].value;
+      const preview = document.getElementById('followingWeekendPreview');
+      if (!endDate) {
+        preview.textContent = 'Choose a plan end date to see the following weekend. Parent: Not specified until selected.';
+        return;
+      }
+      const endMs = dayKeyToUtcMs(endDate);
+      const daysUntilFriday = (5 - new Date(endMs).getUTCDay() + 7) % 7 || 7;
+      const friday = addDaysToDayKey(endDate, daysUntilFriday);
+      const parent = form.elements['following_weekend_parent'].value || null;
+      preview.textContent = followingWeekendText({
+        start: friday,
+        end: addDaysToDayKey(friday, 2),
+        parent,
+        parent_label: parent === 'this_parent' ? dadTitle() : mumTitle(),
+      });
+    }
+
+    function configureFollowingWeekend() {
+      document.getElementById('followingWeekendThisParent').textContent = dadTitle();
+      document.getElementById('followingWeekendOtherParent').textContent = mumTitle();
+      form.elements['holiday_end'].addEventListener('input', updateFollowingWeekendPreview);
+      form.elements['holiday_end'].addEventListener('change', updateFollowingWeekendPreview);
+      form.querySelectorAll('input[name="following_weekend_parent"]').forEach(input => {
+        input.addEventListener('change', updateFollowingWeekendPreview);
+      });
+      document.getElementById('clearFollowingWeekend').addEventListener('click', () => {
+        form.querySelectorAll('input[name="following_weekend_parent"]').forEach(input => {
+          input.checked = false;
+        });
+        updateFollowingWeekendPreview();
+      });
+      updateFollowingWeekendPreview();
+    }
+
+    function boxingDayText(context, plan) {
+      if (!context?.christmas_day || !plan) return '';
+      // Boxing Day is always in GMT, so London midnight is UTC midnight.
+      const dayStart = Date.parse(`${context.christmas_day.slice(0, 4)}-12-26T00:00:00Z`);
+      const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+      const block = [...(plan.blocks || [])]
+        .sort((a, b) => Date.parse(b.start) - Date.parse(a.start))
+        .find(block => Date.parse(block.start) < dayEnd && Date.parse(block.end) > dayStart);
+      if (!block) return 'Boxing Day parent: Outside planned window';
+      const parent = block.owner === 'Dad' ? 'this_parent' : 'other_parent';
+      return `Boxing Day parent: ${context.parent_labels[parent]}`;
+    }
+
+    function christmasText(context, plan = null) {
+      if (!context) return '';
+      if (plan) {
+        const parent = plan.christmas_day_parent ? context.parent_labels[plan.christmas_day_parent] : 'No whole-day assignment';
+        const boxingDay = boxingDayText(context, plan);
+        return `Christmas Day parent: ${parent}${boxingDay ? `. ${boxingDay}` : ''}`;
+      }
+      const requested = context.requested_parent ? context.requested_parent_label : 'Automatic (planner chooses)';
+      const split = context.split_at
+        ? `Split: ${context.split_at.slice(0, 10)} at ${context.split_at.slice(11, 16)} (Europe/London).`
+        : context.mode === 'configured_split' ? 'Christmas split could not be resolved.' : 'Standard planning; no Christmas split configured.';
+      return `Christmas Day ${context.christmas_day || ''}: ${requested}. ${split}`;
+    }
+
+    function christmasNote(context, plan = null) {
+      const text = christmasText(context, plan);
+      return text ? `<p class="following-weekend-note christmas-note">${esc(text)}</p>` : '';
+    }
+
+    function configuredHandoverTime(dayKey) {
+      return APP_CONFIG.handover_time_overrides?.[dayKey] || APP_CONFIG.default_handover_time || '13:00';
+    }
+
+    function updateChristmasControl() {
+      const startKey = form.elements['holiday_start'].value;
+      const endKey = form.elements['holiday_end'].value;
+      const control = document.getElementById('christmasControl');
+      const days = [];
+      if (startKey && endKey && startKey <= endKey) {
+        const boundaryMs = key => {
+          const [hour, minute] = configuredHandoverTime(key).split(':').map(Number);
+          return dayKeyToUtcMs(key) + (hour * 60 + minute) * 60000;
+        };
+        const start = boundaryMs(startKey);
+        const end = boundaryMs(startKey === endKey ? addDaysToDayKey(endKey, 1) : endKey);
+        for (let year = Number(startKey.slice(0, 4)); year <= Number(endKey.slice(0, 4)); year++) {
+          const day = `${String(year).padStart(4, '0')}-12-25`;
+          const midnight = dayKeyToUtcMs(day);
+          if (midnight < end && midnight + 86400000 > start) days.push(day);
+        }
+      }
+      control.hidden = !days.length;
+      control.querySelectorAll('input, button').forEach(input => { input.disabled = !days.length; });
+      if (!days.length) {
+        control.querySelectorAll('input').forEach(input => { input.checked = false; });
+        return;
+      }
+      let text = 'Standard planning; no Christmas split configured.';
+      if (days.length > 1) {
+        text = 'Christmas-specific planning supports one Christmas Day per plan. Shorten the planning period.';
+      } else if (APP_CONFIG.christmas_split_date) {
+        const monthDay = APP_CONFIG.christmas_split_date;
+        const year = Number(days[0].slice(0, 4)) + (monthDay.startsWith('01-') ? 1 : 0);
+        const split = `${year}-${monthDay}`;
+        text = `Christmas split: ${split} at ${configuredHandoverTime(split)} (Europe/London). Two continuous blocks; the planner chooses the order unless a parent is selected.`;
+      }
+      document.getElementById('christmasPreview').textContent = text;
+    }
+
+    function configureChristmasControl() {
+      document.getElementById('christmasThisParent').textContent = dadTitle();
+      document.getElementById('christmasOtherParent').textContent = mumTitle();
+      for (const name of ['holiday_start', 'holiday_end']) {
+        form.elements[name].addEventListener('input', updateChristmasControl);
+        form.elements[name].addEventListener('change', updateChristmasControl);
+      }
+      document.getElementById('clearChristmasParent').addEventListener('click', () => {
+        form.querySelectorAll('input[name="christmas_day_parent"]').forEach(input => { input.checked = false; });
+      });
+      updateChristmasControl();
     }
 
     function setLoading(on) {
@@ -682,41 +870,38 @@
       </div>`;
     }
 
+    function scheduleClipboardChristmasLines(plan) {
+      const text = christmasText(savedChristmas, plan);
+      return text
+        ? text.replace('. Boxing Day parent:', '\nBoxing Day parent:').split('\n')
+        : [];
+    }
+
     function scheduleClipboardPlainText(plan) {
       const blocks = (plan.blocks || []).map((b, i) =>
         `Block ${i + 1}: ${ownerTitle(b.owner)} — ${fmtDt(b.start)} to ${fmtDt(b.end)}`
       ).join('\n');
-      return [
-        `CoParenTime schedule ${plan.plan_id}`,
-        '',
-        `Couple-time status: ${Number(plan.overlap_hours || 0) > 0 ? 'Works' : 'Does not work'}`,
-        `Fairness gap: ${plan.fairness_gap_days} days`,
-        `Couple-time overlap: ${plan.overlap_hours} h`,
-        `Transitions: ${plan.transitions}`,
-        `Fragmentation: ${plan.fragmentation}`,
-        `Score: ${typeof plan.score === 'number' ? plan.score.toFixed(1) : plan.score}`,
-        '',
-        'Parenting blocks:',
+      const sections = [
         blocks || 'None',
-      ].join('\n');
+        followingWeekendText(savedFollowingWeekend),
+      ].filter(Boolean);
+      const christmasLines = scheduleClipboardChristmasLines(plan);
+      if (christmasLines.length) sections.push(christmasLines.join('\n'));
+      return sections.join('\n\n');
     }
 
     function scheduleClipboardHtml(plan) {
-      const blockItems = (plan.blocks || []).map((b, i) =>
-        `<li>Block ${i + 1}: ${esc(ownerTitle(b.owner))} — ${esc(fmtDt(b.start))} to ${esc(fmtDt(b.end))}</li>`
+      const blockLines = (plan.blocks || []).map((b, i) =>
+        `<p>Block ${i + 1}: ${esc(ownerTitle(b.owner))} — ${esc(fmtDt(b.start))} to ${esc(fmtDt(b.end))}</p>`
       ).join('');
+      const followingWeekend = followingWeekendText(savedFollowingWeekend);
+      const christmasLines = scheduleClipboardChristmasLines(plan)
+        .map(line => `<p>${esc(line)}</p>`)
+        .join('');
       return `<div>
-        <h3>CoParenTime schedule ${esc(plan.plan_id)}</h3>
-        <p>
-          Couple-time status: <strong>${Number(plan.overlap_hours || 0) > 0 ? 'Works' : 'Does not work'}</strong><br>
-          Fairness gap: <strong>${esc(plan.fairness_gap_days)} days</strong><br>
-          Couple-time overlap: <strong>${esc(plan.overlap_hours)} h</strong><br>
-          Transitions: <strong>${esc(plan.transitions)}</strong><br>
-          Fragmentation: <strong>${esc(plan.fragmentation)}</strong><br>
-          Score: <strong>${esc(typeof plan.score === 'number' ? plan.score.toFixed(1) : plan.score)}</strong>
-        </p>
-        <h4>Parenting blocks</h4>
-        ${blockItems ? `<ul>${blockItems}</ul>` : '<p>None</p>'}
+        ${blockLines || '<p>None</p>'}
+        ${followingWeekend ? `<p>${esc(followingWeekend)}</p>` : ''}
+        ${christmasLines}
       </div>`;
     }
 
@@ -866,11 +1051,7 @@
         throw new Error('Unable to open print dialog. Please allow pop-ups and try again.');
       }
       const stylesheetHref = document.querySelector('link[href*="/static/style.css"]')?.href || '/static/style.css';
-      
-      // Use safer DOM API instead of innerHTML string concatenation
-      // to prevent any potential XSS issues with string interpolation
-      const printDoc = printWindow.document;
-      printDoc.write(`<!DOCTYPE html>
+      printWindow.document.write(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -881,21 +1062,11 @@
 </head>
 <body>
   <main class="shell">
-    <section class="panel"></section>
+    <section class="panel">${printable.innerHTML}</section>
   </main>
 </body>
 </html>`);
-      printDoc.close();
-      
-      // Append the cloned content safely using DOM API instead of innerHTML
-      const panelEl = printWindow.document.querySelector('.panel');
-      if (panelEl && printable.childNodes.length > 0) {
-        // Clone each child node safely
-        printable.childNodes.forEach(node => {
-          panelEl.appendChild(node.cloneNode(true));
-        });
-      }
-      
+      printWindow.document.close();
       let printed = false;
       const triggerPrint = () => {
         if (printed) return;
@@ -931,6 +1102,8 @@
           ${coupleWindowOutcomeTable(plan.couple_time_window_outcomes)}
         </details>
         ${blockTable(plan.blocks)}
+        ${followingWeekendNote(savedFollowingWeekend)}
+        ${christmasNote(savedChristmas, plan)}
         <div class="plan-actions">
           ${calendarExportButtons(plan, runId)}
           ${scheduleActionButtons(plan)}
@@ -1071,6 +1244,8 @@
     });
 
     function renderCards(result) {
+      savedFollowingWeekend = result.following_weekend || null;
+      savedChristmas = result.christmas || null;
       const s = result.status;
       let html = '';
 
@@ -1081,6 +1256,8 @@
         html += `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
       }
       html += `</dl></div>`;
+      html += followingWeekendNote(savedFollowingWeekend);
+      html += christmasNote(savedChristmas);
 
       if (s === 'ok') {
         html += scheduleOptionsSection(result);
@@ -1131,7 +1308,7 @@
         return `<span class="badge badge-warn">Clarification needed</span> ${(result.clarifications||[]).length} item(s) need resolving before a schedule can be generated.`;
       }
       if (s === 'blocked') {
-        return `<span class="badge badge-err">Blocked</span> No feasible candidates after constraint filtering.`;
+        return `<span class="badge badge-err">Blocked</span> ${esc(result.metadata?.reason || 'No feasible candidates after constraint filtering.')}`;
       }
       return '';
     }
@@ -1154,6 +1331,8 @@
     configurePartnerLabels();
     applyVisualConfig();
     configureHolidayPresetSelect();
+    configureFollowingWeekend();
+    configureChristmasControl();
     configurePartnerKidFreeDefaults();
     configureGoogleCalendarDefault();
     wireSchooldayConfirmationSync();
@@ -1174,6 +1353,8 @@
       const payload = {
         holiday_start:   fd.get('holiday_start'),
         holiday_end:     fd.get('holiday_end'),
+        following_weekend_parent: fd.get('following_weekend_parent') || null,
+        christmas_day_parent: fd.get('christmas_day_parent') || null,
         partner_text:    partnerEnabled() ? (fd.get('partner_text') || '') : '',
         ical_content:    fd.get('ical_content') || null,
         google_calendar_ical_url: fd.get('google_calendar_ical_url') || null,

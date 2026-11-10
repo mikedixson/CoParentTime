@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from dataclasses import replace
+import json
 from pathlib import Path
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app import db
+from app import config, db
 from app.main import app
 import app.services.app_service as app_service
 from app.config import TIMEZONE
 from app.config import RuntimeConfig
 from app.services.candidate_generator import generate_candidates
+from app.models import PlanRunRequest
+from app.services.report_renderer import render_markdown
 
 
 def test_home_includes_google_warning_banner_wiring():
@@ -58,14 +63,14 @@ def test_run_and_fetch_plan_and_artifacts_exist():
     assert md_path.exists()
 
 
-def test_run_plan_pulls_google_calendar_ical(monkeypatch):
+def test_run_plan_pulls_google_calendar_tagged_hard_event(monkeypatch):
     client = TestClient(app)
 
     ics = """BEGIN:VCALENDAR
 BEGIN:VEVENT
 DTSTART:20260812T090000Z
 DTEND:20260812T100000Z
-SUMMARY:Google import test
+    SUMMARY:[BLOCK] Google import test
 END:VEVENT
 END:VCALENDAR
 """
@@ -85,7 +90,42 @@ END:VCALENDAR
     assert run_res.status_code == 200
     body = run_res.json()["result"]
     assert body["status"] == "ok"
-    assert any(i.get("reason") == "Google import test" for i in body["parse_audit"])
+    assert any("Google import test" in str(i.get("reason") or "") for i in body["parse_audit"])
+    assert body["metadata"]["calendar_event_audit"]["google_hard_exclusions"] == 1
+    assert body["metadata"]["calendar_event_audit"]["google_ignored_events"] == 0
+
+
+def test_run_plan_ignores_untagged_google_calendar_event_by_default(monkeypatch):
+    client = TestClient(app)
+
+    ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260812T090000Z
+DTEND:20260812T100000Z
+SUMMARY:Gmail auto flight event
+END:VEVENT
+END:VCALENDAR
+"""
+
+    monkeypatch.setattr(app_service, "fetch_google_calendar_ics", lambda url: ics)
+
+    payload = {
+        "holiday_start": "2026-08-01",
+        "holiday_end": "2026-08-21",
+        "partner_text": "kidfree: 2026-08-03 18:00 to 2026-08-05 18:00",
+        "google_calendar_ical_url": "https://calendar.google.com/calendar/ical/test/basic.ics",
+        "pre_holiday_schoolday_confirmed": True,
+        "options": {"boundary_policy": "Strict", "terminal_exception": False},
+    }
+
+    run_res = client.post("/plan/run", json=payload)
+    assert run_res.status_code == 200
+    body = run_res.json()["result"]
+    assert body["status"] == "ok"
+    assert body["metadata"]["calendar_event_audit"]["google_hard_exclusions"] == 0
+    assert body["metadata"]["calendar_event_audit"]["google_together_windows"] == 0
+    assert body["metadata"]["calendar_event_audit"]["google_ignored_events"] == 1
+    assert len(body["metadata"].get("google_ignored_events", [])) == 1
 
 
 def test_run_plan_continues_when_google_calendar_unavailable(monkeypatch):
@@ -383,3 +423,158 @@ def test_home_includes_schedule_copy_image_and_print_wiring():
     assert 'data-schedule-action="copy"' in html
     assert 'data-schedule-action="copy-image"' in html
     assert 'data-schedule-action="print"' in html
+    plain_copy = html.split("function scheduleClipboardPlainText(plan) {", 1)[1].split(
+        "\n    function scheduleClipboardHtml", 1
+    )[0]
+    assert "Block ${i + 1}:" in plain_copy
+    assert "sections.join('\\n\\n')" in plain_copy
+    assert "Couple-time status:" not in plain_copy
+    assert "Fairness gap:" not in plain_copy
+    assert "Score:" not in plain_copy
+    assert "scheduleClipboardChristmasLines(plan)" in html
+    clipboard_html = html.split("function scheduleClipboardHtml(plan) {", 1)[1].split(
+        "\n    async function copyScheduleToClipboard", 1
+    )[0]
+    assert "Block ${i + 1}:" in clipboard_html
+    assert "Couple-time status:" not in clipboard_html
+    assert "Fairness gap:" not in clipboard_html
+    assert "CoParenTime schedule" not in clipboard_html
+
+
+@pytest.mark.parametrize("legacy_labels", [False, True])
+@pytest.mark.parametrize("parent,label", [("this_parent", "Parent A"), ("other_parent", "Parent B"), (None, None)])
+def test_following_weekend_saved_in_api_artifacts_and_config_labels(tmp_path, monkeypatch, legacy_labels, parent, label):
+    settings = tmp_path / "settings.json"
+    keys = ("dad_title", "mum_title") if legacy_labels else ("this_parent", "other_parent")
+    settings.write_text(json.dumps({keys[0]: "Parent A", keys[1]: "Parent B"}), encoding="utf-8")
+    monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", settings)
+    config.get_runtime_config.cache_clear()
+    try:
+        client = TestClient(app)
+        response = client.post("/plan/run", json={
+            "holiday_start": "2026-08-01",
+            "holiday_end": "2026-08-21",
+            "pre_holiday_schoolday_confirmed": True,
+            "following_weekend_parent": parent,
+        })
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["status"] == "ok"
+        expected = {"start": "2026-08-28", "end": "2026-08-30", "parent": parent, "parent_label": label}
+        assert result["following_weekend"] == expected
+
+        # A saved result must keep its original name even after configuration changes.
+        monkeypatch.setattr(app_service, "get_runtime_config", lambda: replace(
+            config.get_runtime_config(), dad_title="Changed A", mum_title="Changed B",
+        ))
+        assert client.get(f"/plan/{result['run_id']}").json()["result"]["following_weekend"] == expected
+        artifact = json.loads(Path(result["artifacts"]["json"]).read_text(encoding="utf-8"))
+        assert artifact["following_weekend"] == expected
+        report = Path(result["artifacts"]["markdown"]).read_text(encoding="utf-8")
+        assert f"Friday 2026-08-28 to Sunday 2026-08-30: {label or 'Not specified'}." in report
+        with sqlite3.connect(db.DB_PATH) as conn:
+            row = conn.execute("SELECT payload_json FROM run_inputs WHERE run_id = ?", (result["run_id"],)).fetchone()
+        assert json.loads(row[0])["following_weekend_parent"] == parent
+    finally:
+        config.get_runtime_config.cache_clear()
+
+
+@pytest.mark.parametrize("end,friday,sunday", [
+    ("2026-08-17", "2026-08-21", "2026-08-23"),
+    ("2026-08-18", "2026-08-21", "2026-08-23"),
+    ("2026-08-19", "2026-08-21", "2026-08-23"),
+    ("2026-08-20", "2026-08-21", "2026-08-23"),
+    ("2026-08-21", "2026-08-28", "2026-08-30"),
+    ("2026-08-22", "2026-08-28", "2026-08-30"),
+    ("2026-08-23", "2026-08-28", "2026-08-30"),
+    ("2026-08-31", "2026-09-04", "2026-09-06"),
+    ("2026-12-31", "2027-01-01", "2027-01-03"),
+    ("2026-03-26", "2026-03-27", "2026-03-29"),
+    ("2026-10-22", "2026-10-23", "2026-10-25"),
+])
+def test_following_weekend_dates(end, friday, sunday):
+    request = PlanRunRequest(holiday_start=end, holiday_end=end)
+    context = app_service._following_weekend_context(request, config.get_runtime_config())
+    assert context.start.isoformat() == friday
+    assert context.end.isoformat() == sunday
+    assert context.parent is None
+    assert context.parent_label is None
+
+
+def test_following_weekend_is_informational_and_calendar_events_unchanged(monkeypatch):
+    runtime = replace(config.get_runtime_config(), partner_enabled=False)
+    monkeypatch.setattr(app_service, "get_runtime_config", lambda: runtime)
+    client = TestClient(app)
+    results = []
+    calendars = []
+    for parent in (None, "this_parent", "other_parent"):
+        payload = {
+            "holiday_start": "2026-08-01", "holiday_end": "2026-08-21",
+            "pre_holiday_schoolday_confirmed": True,
+        }
+        if parent:
+            payload["following_weekend_parent"] = parent
+        response = client.post("/plan/run", json=payload)
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["status"] == "ok"
+        results.append(result)
+        calendar = client.get(f"/plan/{result['run_id']}/ical").text
+        calendars.append([line for line in calendar.splitlines() if not line.startswith(("UID:", "DTSTAMP:"))])
+        assert calendar.count("BEGIN:VEVENT") == len(result["primary"]["blocks"])
+        assert "20260828" not in calendar
+    assert results[0]["following_weekend"]["parent"] is None
+    for key in ("primary", "alternatives", "couple_time_views", "constraint_audit", "relationship_optimization_audit"):
+        assert results[0][key] == results[1][key] == results[2][key]
+    assert calendars[0] == calendars[1] == calendars[2]
+
+
+@pytest.mark.parametrize("status", ["needs_clarification", "blocked"])
+def test_following_weekend_context_in_non_success_results(monkeypatch, status):
+    if status == "blocked":
+        monkeypatch.setattr(app_service, "validate_candidates", lambda *args, **kwargs: ([], []))
+    client = TestClient(app)
+    response = client.post("/plan/run", json={
+        "holiday_start": "2026-08-01", "holiday_end": "2026-08-21",
+        "pre_holiday_schoolday_confirmed": status == "blocked",
+        "following_weekend_parent": "other_parent",
+    })
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["status"] == status
+    assert result["following_weekend"]["parent"] == "other_parent"
+    assert result["following_weekend"]["start"] == "2026-08-28"
+    assert client.get(f"/plan/{result['run_id']}").json()["result"]["following_weekend"] == result["following_weekend"]
+
+
+def test_following_weekend_invalid_parent_is_rejected():
+    response = TestClient(app).post("/plan/run", json={
+        "holiday_start": "2026-08-01", "holiday_end": "2026-08-21",
+        "following_weekend_parent": "Dad",
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "following_weekend_parent"]
+
+
+def test_historical_result_without_following_weekend_remains_readable():
+    from app.models import PlanResultPayload
+
+    old_result = {"run_id": "old-run", "status": "blocked", "input_summary": {}, "parse_audit": []}
+    db.save_result("old-run", old_result)
+    response = TestClient(app).get("/plan/old-run")
+    assert response.status_code == 200
+    assert response.json()["result"]["following_weekend"] is None
+    assert "Following Weekend" not in render_markdown(PlanResultPayload.model_validate(old_result))
+
+
+def test_home_includes_unselected_following_weekend_control_and_sharing():
+    html = TestClient(app).get("/").text
+    assert 'value="this_parent"' in html
+    assert 'value="other_parent"' in html
+    assert 'value="this_parent" checked' not in html
+    assert 'value="other_parent" checked' not in html
+    assert 'following_weekend_parent: fd.get(' in html
+    assert "configureFollowingWeekend();" in html
+    assert "followingWeekendText(savedFollowingWeekend)," in html
+    assert html.count("${followingWeekendNote(savedFollowingWeekend)}") == 2
+    assert "Information only; does not specify care before that Friday." not in html

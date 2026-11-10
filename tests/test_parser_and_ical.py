@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import TIMEZONE
-from app.services.ical_adapter import parse_hard_exclusions
+from app.services.ical_adapter import parse_google_calendar_intervals, parse_hard_exclusions
 from app.services.interval_parser import parse_partner_text
 
 
@@ -95,3 +95,65 @@ END:VCALENDAR
 
     assert len(intervals) == 1
     assert intervals[0].reason == "In window"
+
+
+def test_google_calendar_parser_classifies_tagged_events():
+    ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260826T081000Z
+DTEND:20260830T203500Z
+SUMMARY:[TOGETHER] Trip to Dublin
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260812T090000Z
+DTEND:20260812T100000Z
+SUMMARY:[BLOCK] Dentist appointment
+END:VEVENT
+END:VCALENDAR
+"""
+
+    w_start = datetime(2026, 7, 20, tzinfo=TIMEZONE)
+    w_end = datetime(2026, 9, 2, tzinfo=TIMEZONE)
+
+    classified = parse_google_calendar_intervals(
+        ics,
+        w_start,
+        w_end,
+        hard_tags=("BLOCK", "UNAVAILABLE"),
+        together_tags=("TOGETHER",),
+        default_mode="ignore_untagged",
+    )
+
+    assert len(classified.together_windows) == 1
+    assert len(classified.hard_exclusions) == 1
+    assert len(classified.ignored_events) == 0
+    assert "Trip to Dublin" in (classified.together_windows[0].reason or "")
+    assert "Dentist appointment" in (classified.hard_exclusions[0].reason or "")
+
+
+def test_google_calendar_parser_ignores_untagged_events_by_default():
+    ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260826T081000Z
+DTEND:20260830T203500Z
+SUMMARY:Flight to Dublin
+END:VEVENT
+END:VCALENDAR
+"""
+
+    w_start = datetime(2026, 7, 20, tzinfo=TIMEZONE)
+    w_end = datetime(2026, 9, 2, tzinfo=TIMEZONE)
+
+    classified = parse_google_calendar_intervals(
+        ics,
+        w_start,
+        w_end,
+        hard_tags=("BLOCK", "UNAVAILABLE"),
+        together_tags=("TOGETHER",),
+        default_mode="ignore_untagged",
+    )
+
+    assert len(classified.together_windows) == 0
+    assert len(classified.hard_exclusions) == 0
+    assert len(classified.ignored_events) == 1
+    assert classified.ignored_events[0]["summary"] == "Flight to Dublin"

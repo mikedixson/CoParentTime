@@ -9,6 +9,34 @@ from app.models import CandidatePlan, ParentingBlock
 HandoverResolver = Callable[[date], datetime]
 
 
+def generate_christmas_candidates(
+    window_start: datetime, window_end: datetime, split_at: datetime,
+) -> list[CandidatePlan]:
+    if not window_start < split_at < window_end:
+        raise ValueError("Christmas split must be strictly inside the planning window")
+    candidates = []
+    orders: tuple[tuple[Literal["Dad", "Mum"], Literal["Dad", "Mum"]], ...] = (("Dad", "Mum"), ("Mum", "Dad"))
+    for idx, owners in enumerate(orders, start=1):
+        blocks = [
+            ParentingBlock(
+                start=start, end=end, length_days=max(1, (end.date() - start.date()).days), owner=owner,
+            )
+            for start, end, owner in (
+                (window_start, split_at, owners[0]),
+                (split_at, window_end, owners[1]),
+            )
+        ]
+        candidates.append(CandidatePlan(
+            plan_id=f"christmas-{idx:03d}",
+            blocks=blocks,
+            fairness_gap_days=float(abs(blocks[0].length_days - blocks[1].length_days)),
+            overlap_hours=0.0,
+            transitions=1,
+            fragmentation=sum(block.length_days < 7 for block in blocks),
+        ))
+    return candidates
+
+
 def _build_blocks(
     start: datetime,
     end: datetime,

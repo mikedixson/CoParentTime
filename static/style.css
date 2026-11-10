@@ -100,6 +100,68 @@ select {
   flex: 0 0 auto;
 }
 
+.following-weekend-control {
+  border: 1px solid var(--ring);
+  border-radius: 12px;
+  margin: 0 0 1rem;
+  min-width: 0;
+}
+
+.following-weekend-control p {
+  color: var(--muted);
+}
+
+.weekend-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.weekend-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 2px solid var(--ring);
+  border-radius: 999px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.weekend-option input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--weekend-parent-color);
+}
+
+.this-parent-option {
+  --weekend-parent-color: var(--this-parent-color);
+}
+
+.other-parent-option {
+  --weekend-parent-color: var(--other-parent-color);
+}
+
+.weekend-option:has(input:checked) {
+  border-color: var(--weekend-parent-color);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.weekend-option:focus-within,
+#clearFollowingWeekend:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.following-weekend-note {
+  border-left: 3px solid var(--accent);
+  padding: 0.6rem 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 button {
   border: 0;
   border-radius: 999px;

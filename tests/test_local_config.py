@@ -45,6 +45,12 @@ def test_runtime_config_preserves_raw_partner_text_lines(tmp_path, monkeypatch):
     ]
     assert runtime.google_calendar_ical_url == "https://calendar.google.com/calendar/ical/test/basic.ics"
     assert ui_config["google_calendar_ical_url"] == "https://calendar.google.com/calendar/ical/test/basic.ics"
+    assert runtime.calendar_event_policy_default_mode == "ignore_untagged"
+    assert runtime.calendar_event_policy_hard_tags == ("BLOCK", "UNAVAILABLE")
+    assert runtime.calendar_event_policy_together_tags == ("TOGETHER",)
+    assert ui_config["calendar_event_policy_default_mode"] == "ignore_untagged"
+    assert ui_config["calendar_event_policy_hard_tags"] == ["BLOCK", "UNAVAILABLE"]
+    assert ui_config["calendar_event_policy_together_tags"] == ["TOGETHER"]
     assert runtime.pre_holiday_school_pickup_time == "15:35"
     assert ui_config["pre_holiday_school_pickup_time"] == "15:35"
 
@@ -169,5 +175,37 @@ def test_runtime_config_parses_default_handover_time_and_overrides(tmp_path, mon
         "2026-08-08": "17:00",
         "2026-08-15": "10:30",
     }
+
+    config.get_runtime_config.cache_clear()
+
+
+def test_runtime_config_parses_calendar_event_policy_tags(tmp_path, monkeypatch):
+    local_config = tmp_path / "coparentime.local.json"
+    local_config.write_text(
+        json.dumps(
+            {
+                "partner_name": "Preet",
+                "school_holiday_ranges": ["2026-07-20 - 2026-09-02"],
+                "partner_kid_free_ranges": [],
+                "calendar_event_policy_default_mode": "hard_untagged",
+                "calendar_event_policy_hard_tags": ["block", "unavailable", "BLOCK"],
+                "calendar_event_policy_together_tags": "together, date-night",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config.get_runtime_config.cache_clear()
+    monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", local_config)
+
+    runtime = config.get_runtime_config()
+    ui_config = config.get_ui_config()
+
+    assert runtime.calendar_event_policy_default_mode == "hard_untagged"
+    assert runtime.calendar_event_policy_hard_tags == ("BLOCK", "UNAVAILABLE")
+    assert runtime.calendar_event_policy_together_tags == ("TOGETHER", "DATE-NIGHT")
+    assert ui_config["calendar_event_policy_default_mode"] == "hard_untagged"
+    assert ui_config["calendar_event_policy_hard_tags"] == ["BLOCK", "UNAVAILABLE"]
+    assert ui_config["calendar_event_policy_together_tags"] == ["TOGETHER", "DATE-NIGHT"]
 
     config.get_runtime_config.cache_clear()

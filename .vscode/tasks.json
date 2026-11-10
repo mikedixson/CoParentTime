@@ -1,0 +1,94 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CoParenTime: Install Runtime Deps",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "& .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Install Dev Deps",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "& .\\.venv\\Scripts\\python.exe -m pip install -r requirements-dev.txt"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Run App",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "& .\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+      ],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Run App (Reload)",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "& .\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+      ],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Test",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "& .\\.venv\\Scripts\\python.exe -m pytest -q"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Smoke API",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-Command",
+        "Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -Method Get | ConvertTo-Json"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CoParenTime: Stop App",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NoLogo",
+        "-File",
+        "${workspaceFolder}\\scripts\\stop_app.ps1"
+      ],
+      "isBackground": false,
+      "problemMatcher": []
+    }
+  ]
+}

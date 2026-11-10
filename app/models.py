@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 IntervalType = Literal["kid_free", "exclusion", "hard_exclusion"]
+ParentSide = Literal["this_parent", "other_parent"]
 
 
 class TimeInterval(BaseModel):
@@ -48,6 +49,7 @@ class CandidatePlan(BaseModel):
     couple_time_window_outcomes: list[CoupleTimeWindowOutcome] = Field(default_factory=list)
     disqualified_reason: str | None = None
     score: float = 0.0
+    christmas_day_parent: ParentSide | None = None
 
 
 class ClarificationItem(BaseModel):
@@ -65,6 +67,8 @@ class PlanRunRequest(BaseModel):
     planning_period: str = ""
     holiday_start: date
     holiday_end: date
+    following_weekend_parent: ParentSide | None = None
+    christmas_day_parent: ParentSide | None = None
     partner_text: str = ""
     options: dict = Field(default_factory=dict)
     pre_holiday_schoolday_confirmed: bool = False
@@ -82,10 +86,28 @@ class PlanRunRequest(BaseModel):
         return v
 
 
+class FollowingWeekendContext(BaseModel):
+    start: date
+    end: date
+    parent: ParentSide | None = None
+    parent_label: str | None = None
+
+
+class ChristmasContext(BaseModel):
+    christmas_day: date | None = None
+    split_at: datetime | None = None
+    requested_parent: ParentSide | None = None
+    requested_parent_label: str | None = None
+    parent_labels: dict[ParentSide, str]
+    mode: Literal["configured_split", "manual_parent"]
+
+
 class PlanResultPayload(BaseModel):
     run_id: str
     status: Literal["ok", "needs_clarification", "blocked"]
     input_summary: dict
+    following_weekend: FollowingWeekendContext | None = None
+    christmas: ChristmasContext | None = None
     parse_audit: list[dict]
     primary: CandidatePlan | None = None
     alternatives: list[CandidatePlan] = Field(default_factory=list)

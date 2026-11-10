@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from app.models import CandidatePlan, CoupleTimeWindowOutcome, TimeInterval
+
+
+def parent_covering_window(
+    candidate: CandidatePlan, start: datetime, end: datetime,
+) -> Literal["Dad", "Mum"] | None:
+    owners: tuple[Literal["Dad", "Mum"], ...] = ("Dad", "Mum")
+    for owner in owners:
+        cursor = start
+        for block in sorted(candidate.blocks, key=lambda block: block.start):
+            if block.owner != owner or block.end <= cursor:
+                continue
+            if block.start > cursor:
+                break
+            cursor = max(cursor, block.end)
+            if cursor >= end:
+                return owner
+    return None
 
 
 def _overlap_seconds(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> float:
@@ -91,11 +109,21 @@ def validate_candidates(
     hard_exclusions: list[TimeInterval],
     kid_free: list[TimeInterval],
     partner_name: str = "Partner",
+    christmas_window: tuple[datetime, datetime] | None = None,
+    christmas_owner: Literal["Dad", "Mum"] | None = None,
 ) -> tuple[list[CandidatePlan], list[dict]]:
     audits: list[dict] = []
     valid: list[CandidatePlan] = []
 
     for candidate in candidates:
+        if christmas_window and christmas_owner and parent_covering_window(candidate, *christmas_window) != christmas_owner:
+            candidate.disqualified_reason = "Christmas Day constraint violated: selected parent must have all of 25 December"
+            audits.append({
+                "plan_id": candidate.plan_id,
+                "status": "disqualified",
+                "reason": candidate.disqualified_reason,
+            })
+            continue
         if _dad_overlaps_exclusion(candidate, hard_exclusions):
             candidate.disqualified_reason = "Hard exclusion violated: Dad assigned during exclusion"
             audits.append(

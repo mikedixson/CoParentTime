@@ -46,6 +46,9 @@ class RuntimeConfig:
 	google_calendar_ical_url: str | None
 	pre_holiday_school_pickup_time: str
 	schedule_visual_default: str
+	calendar_event_policy_default_mode: str = "ignore_untagged"
+	calendar_event_policy_hard_tags: tuple[str, ...] = ("BLOCK", "UNAVAILABLE")
+	calendar_event_policy_together_tags: tuple[str, ...] = ("TOGETHER",)
 	partner_enabled: bool = False
 	default_handover_time: str = "13:00"
 	handover_time_overrides: tuple[ParsedHandoverTimeOverride, ...] = ()
@@ -55,6 +58,7 @@ class RuntimeConfig:
 	mum_color: str = "#b45309"
 	partner_available_color: str = "#22c55e"
 	partner_unavailable_color: str = "#f97316"
+	christmas_split_date: str | None = None
 
 	def handover_time_for(self, handover_day: date) -> time:
 		for override in self.handover_time_overrides:
@@ -144,6 +148,18 @@ def _parse_schedule_visual_default(raw: str | None, default: str = "both") -> st
 	return value
 
 
+def _parse_christmas_split_date(raw: object) -> str | None:
+	if raw is None:
+		return None
+	if not isinstance(raw, str) or not re.fullmatch(r"(12|01)-\d{2}", raw):
+		raise ValueError("christmas_split_date must be a December or January date in MM-DD format, or null")
+	try:
+		date.fromisoformat(f"2000-{raw}")
+	except ValueError as exc:
+		raise ValueError("christmas_split_date must be a valid December or January date") from exc
+	return raw
+
+
 def _parse_nonempty_text(raw: str | None, default: str) -> str:
 	value = str(raw or "").strip()
 	return value or default
@@ -179,6 +195,34 @@ def _parse_css_color(raw: str | None, default: str) -> str:
 	return default
 
 
+def _parse_calendar_default_mode(raw: object, default: str = "ignore_untagged") -> str:
+	value = str(raw or "").strip().lower()
+	if value in {"ignore_untagged", "hard_untagged"}:
+		return value
+	return default
+
+
+def _parse_tag_list(raw: object, default: tuple[str, ...]) -> tuple[str, ...]:
+	if raw is None:
+		return default
+	if isinstance(raw, str):
+		items = [x.strip() for x in raw.split(",") if x and x.strip()]
+	else:
+		items = [str(x).strip() for x in list(raw) if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+	if not items:
+		return default
+	# Preserve deterministic order while removing duplicates.
+	seen: set[str] = set()
+	cleaned: list[str] = []
+	for item in items:
+		tag = item.strip().strip("[]").upper()
+		if not tag or tag in seen:
+			continue
+		seen.add(tag)
+		cleaned.append(tag)
+	return tuple(cleaned) or default
+
+
 @lru_cache(maxsize=1)
 def get_runtime_config() -> RuntimeConfig:
 	payload: dict = {}
@@ -193,10 +237,14 @@ def get_runtime_config() -> RuntimeConfig:
 	school_ranges = _parse_range_list(payload.get("school_holiday_ranges", []))
 	kid_free_ranges = _parse_text_line_list(payload.get("partner_kid_free_ranges", []))
 	google_calendar_ical_url = str(payload.get("google_calendar_ical_url") or "").strip() or None
+	calendar_default_mode = _parse_calendar_default_mode(payload.get("calendar_event_policy_default_mode"))
+	calendar_hard_tags = _parse_tag_list(payload.get("calendar_event_policy_hard_tags"), ("BLOCK", "UNAVAILABLE"))
+	calendar_together_tags = _parse_tag_list(payload.get("calendar_event_policy_together_tags"), ("TOGETHER",))
 	pre_holiday_school_pickup_time = _parse_hhmm_time(payload.get("pre_holiday_school_pickup_time"))
 	default_handover_time = _parse_hhmm_time(payload.get("default_handover_time"), default="13:00")
 	handover_time_overrides = _parse_handover_time_overrides(payload.get("handover_time_overrides"))
 	schedule_visual_default = _parse_schedule_visual_default(payload.get("schedule_visual_default"))
+	christmas_split_date = _parse_christmas_split_date(payload.get("christmas_split_date"))
 	dad_title = _parse_nonempty_text(payload.get("this_parent") or payload.get("dad_title"), "Dad")
 	mum_title = _parse_nonempty_text(payload.get("other_parent") or payload.get("mum_title"), "Mum")
 	dad_color = _parse_css_color(payload.get("this_parent_color") or payload.get("dad_color"), "#0f766e")
@@ -210,10 +258,14 @@ def get_runtime_config() -> RuntimeConfig:
 		school_holiday_ranges=school_ranges,
 		partner_kid_free_ranges=kid_free_ranges,
 		google_calendar_ical_url=google_calendar_ical_url,
+		calendar_event_policy_default_mode=calendar_default_mode,
+		calendar_event_policy_hard_tags=calendar_hard_tags,
+		calendar_event_policy_together_tags=calendar_together_tags,
 		pre_holiday_school_pickup_time=pre_holiday_school_pickup_time,
 		default_handover_time=default_handover_time,
 		handover_time_overrides=handover_time_overrides,
 		schedule_visual_default=schedule_visual_default,
+		christmas_split_date=christmas_split_date,
 		dad_title=dad_title,
 		mum_title=mum_title,
 		dad_color=dad_color,
@@ -242,12 +294,16 @@ def get_ui_config() -> dict:
 		"school_holiday_ranges": _serialise(runtime.school_holiday_ranges),
 		"partner_kid_free_ranges": [{"raw": raw} for raw in runtime.partner_kid_free_ranges],
 		"google_calendar_ical_url": runtime.google_calendar_ical_url,
+		"calendar_event_policy_default_mode": runtime.calendar_event_policy_default_mode,
+		"calendar_event_policy_hard_tags": list(runtime.calendar_event_policy_hard_tags),
+		"calendar_event_policy_together_tags": list(runtime.calendar_event_policy_together_tags),
 		"pre_holiday_school_pickup_time": runtime.pre_holiday_school_pickup_time,
 		"default_handover_time": runtime.default_handover_time,
 		"handover_time_overrides": {
 			override.day.isoformat(): override.time_text for override in runtime.handover_time_overrides
 		},
 		"schedule_visual_default": runtime.schedule_visual_default,
+		"christmas_split_date": runtime.christmas_split_date,
 		"this_parent": runtime.dad_title,
 		"other_parent": runtime.mum_title,
 		"this_parent_color": runtime.dad_color,

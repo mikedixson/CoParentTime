@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from app import db
 from app.config import RuntimeConfig, TIMEZONE, get_runtime_config
-from app.models import ClarificationItem, ParseResult, PlanResultPayload, PlanRunRequest
-from app.services.candidate_generator import generate_candidates
+from app.models import ChristmasContext, ClarificationItem, FollowingWeekendContext, ParentSide, ParseResult, PlanResultPayload, PlanRunRequest
+from app.services.candidate_generator import generate_candidates, generate_christmas_candidates
 from app.services.clarification_engine import build_clarification_payload, is_critical_ambiguity
-from app.services.constraint_engine import validate_candidates
+from app.services.constraint_engine import parent_covering_window, validate_candidates
 from app.services.google_calendar import GoogleCalendarFetchError, fetch_google_calendar_ics, redact_google_calendar_url
 from app.services.hashing import stable_input_hash
-from app.services.ical_adapter import parse_hard_exclusions
+from app.services.ical_adapter import parse_google_calendar_intervals, parse_hard_exclusions
 from app.services.interval_parser import parse_partner_text
 from app.services.report_renderer import write_artifacts
 from app.services.scoring_engine import score_and_rank
@@ -33,6 +34,57 @@ def _planning_period_label(req: PlanRunRequest) -> str:
     if req.planning_period.strip():
         return req.planning_period.strip()
     return f"{req.holiday_start.isoformat()} to {req.holiday_end.isoformat()}"
+
+
+def _following_weekend_context(req: PlanRunRequest, runtime_config: RuntimeConfig) -> FollowingWeekendContext:
+    days_until_friday = (4 - req.holiday_end.weekday()) % 7 or 7
+    friday = req.holiday_end + timedelta(days=days_until_friday)
+    labels: dict[ParentSide, str] = {"this_parent": runtime_config.dad_title, "other_parent": runtime_config.mum_title}
+    return FollowingWeekendContext(
+        start=friday,
+        end=friday + timedelta(days=2),
+        parent=req.following_weekend_parent,
+        parent_label=labels[req.following_weekend_parent] if req.following_weekend_parent else None,
+    )
+
+
+def _christmas_context(
+    req: PlanRunRequest, runtime_config: RuntimeConfig, start: datetime, end: datetime,
+) -> tuple[ChristmasContext | None, str | None]:
+    if not runtime_config.christmas_split_date and not req.christmas_day_parent:
+        return None, None
+    days = [
+        date(year, 12, 25) for year in range(start.year, end.year + 1)
+        if datetime(year, 12, 25, tzinfo=TIMEZONE) < end
+        and datetime(year, 12, 26, tzinfo=TIMEZONE) > start
+    ]
+    if not days and not req.christmas_day_parent:
+        return None, None
+    labels: dict[ParentSide, str] = {"this_parent": runtime_config.dad_title, "other_parent": runtime_config.mum_title}
+    context = ChristmasContext(
+        christmas_day=days[0] if len(days) == 1 else None,
+        requested_parent=req.christmas_day_parent,
+        requested_parent_label=labels[req.christmas_day_parent] if req.christmas_day_parent else None,
+        parent_labels=labels,
+        mode="configured_split" if runtime_config.christmas_split_date else "manual_parent",
+    )
+    if len(days) != 1:
+        return context, "Christmas planning requires exactly one Christmas Day in the planning window."
+    day = days[0]
+    day_start = datetime.combine(day, time.min, tzinfo=TIMEZONE)
+    day_end = day_start + timedelta(days=1)
+    if runtime_config.christmas_split_date:
+        month, day_number = map(int, runtime_config.christmas_split_date.split("-"))
+        split_day = date(day.year + (month == 1), month, day_number)
+        context.split_at = _handover_datetime(split_day, runtime_config)
+    if start > day_start or end < day_end:
+        return context, "Christmas planning requires the whole of 25 December, from midnight to midnight, inside the planning window."
+    if context.split_at:
+        if not start < context.split_at < end:
+            return context, "The configured Christmas split must be strictly inside the planning window."
+        if day_start < context.split_at < day_end:
+            return context, "The configured Christmas split cannot divide Christmas Day. Choose a handover outside 25 December or exactly at midnight."
+    return context, None
 
 
 def _clip_to_window(intervals: list, window_start: datetime, window_end: datetime) -> list:
@@ -95,6 +147,8 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
     runtime_config = get_runtime_config()
     start, end = _window_datetimes(req, runtime_config)
     planning_period = _planning_period_label(req)
+    following_weekend = _following_weekend_context(req, runtime_config)
+    christmas, christmas_error = _christmas_context(req, runtime_config, start, end)
 
     payload = req.model_dump(mode="json")
     payload["planning_period"] = planning_period
@@ -107,6 +161,27 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
 
     db.save_run_header(run_id, planning_period, "started", input_hash)
     db.save_run_input(run_id, persisted_payload)
+    if christmas_error:
+        result = PlanResultPayload(
+            run_id=run_id,
+            status="blocked",
+            following_weekend=following_weekend,
+            christmas=christmas,
+            input_summary={
+                "planning_period": planning_period,
+                "holiday_start": str(req.holiday_start),
+                "holiday_end": str(req.holiday_end),
+                "timezone": "Europe/London",
+            },
+            parse_audit=[],
+            constraint_audit=[{"status": "blocked", "reason": christmas_error}],
+            metadata={"input_hash": input_hash, "reason": christmas_error},
+        )
+        result.artifacts = write_artifacts(result)
+        db.save_audit(run_id, "constraint", result.constraint_audit)
+        db.save_result(run_id, result.model_dump(mode="json"))
+        db.save_run_header(run_id, planning_period, "blocked", input_hash)
+        return result
     if runtime_config.partner_enabled:
         parse_result = parse_partner_text(req.partner_text, req.clarification_responses)
     else:
@@ -137,6 +212,8 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
         result = PlanResultPayload(
             run_id=run_id,
             status="needs_clarification",
+            following_weekend=following_weekend,
+            christmas=christmas,
             input_summary={
                 "planning_period": planning_period,
                 "holiday_start": str(req.holiday_start),
@@ -155,6 +232,8 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
         return result
 
     hard_exclusions = parse_hard_exclusions(req.ical_content, req.ical_file_path, window_start=start, window_end=end)
+    calendar_together_windows = []
+    ignored_google_events: list[dict] = []
     google_calendar_warnings: list[str] = []
 
     if req.google_calendar_ical_url and req.google_calendar_ical_url.strip():
@@ -165,46 +244,98 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
             remote_ics = ""
 
         if remote_ics:
-            hard_exclusions.extend(parse_hard_exclusions(remote_ics, None, window_start=start, window_end=end))
+            classified = parse_google_calendar_intervals(
+                remote_ics,
+                start,
+                end,
+                hard_tags=runtime_config.calendar_event_policy_hard_tags,
+                together_tags=runtime_config.calendar_event_policy_together_tags,
+                default_mode=runtime_config.calendar_event_policy_default_mode,
+            )
+            hard_exclusions.extend(classified.hard_exclusions)
+            calendar_together_windows.extend(classified.together_windows)
+            ignored_google_events.extend(classified.ignored_events)
 
     hard_exclusions = _clip_to_window(hard_exclusions, start, end)
+    calendar_together_windows = _clip_to_window(calendar_together_windows, start, end)
 
     partner_intervals = _clip_to_window(parse_result.intervals, start, end)
     user_exclusions = [i for i in partner_intervals if i.type in {"exclusion"}]
     kid_free_raw = [i for i in partner_intervals if i.type == "kid_free"]
+    kid_free_raw.extend(calendar_together_windows)
     # Subtract partner exclusion periods from availability windows so that
     # couple-time coverage is not credited for dates Preet is unavailable.
     kid_free = _subtract_exclusions_from_kid_free(kid_free_raw, user_exclusions)
-    all_exclusions = hard_exclusions + user_exclusions
 
-    candidates = generate_candidates(
-        start,
-        end,
-        handover_at=lambda handover_day: _handover_datetime(handover_day, runtime_config),
-    )
+    if christmas and christmas.split_at:
+        candidates = generate_christmas_candidates(start, end, christmas.split_at)
+    else:
+        candidates = generate_candidates(
+            start,
+            end,
+            handover_at=lambda handover_day: _handover_datetime(handover_day, runtime_config),
+        )
+    christmas_window = None
+    christmas_owner: Literal["Dad", "Mum"] | None = None
+    if christmas and christmas.christmas_day:
+        day_start = datetime.combine(christmas.christmas_day, time.min, tzinfo=TIMEZONE)
+        christmas_window = (day_start, day_start + timedelta(days=1))
+        if req.christmas_day_parent:
+            christmas_owner = "Dad" if req.christmas_day_parent == "this_parent" else "Mum"
+        for candidate in candidates:
+            owner = parent_covering_window(candidate, *christmas_window)
+            candidate.christmas_day_parent = "this_parent" if owner == "Dad" else "other_parent" if owner == "Mum" else None
+    # Only pass hard calendar exclusions to constraint validation.
+    # Partner unavailability exclusions (user_exclusions) should not block Dad from being assigned;
+    # they define when Dad must parent alone while partner is unavailable.
     valid_candidates, constraint_audit = validate_candidates(
         candidates,
-        all_exclusions,
+        hard_exclusions,
         kid_free,
         partner_name=runtime_config.partner_name,
+        christmas_window=christmas_window,
+        christmas_owner=christmas_owner,
     )
 
     if not valid_candidates:
         result = PlanResultPayload(
             run_id=run_id,
             status="blocked",
+            following_weekend=following_weekend,
+            christmas=christmas,
             input_summary={
                 "planning_period": planning_period,
                 "holiday_start": str(req.holiday_start),
                 "holiday_end": str(req.holiday_end),
                 "timezone": "Europe/London",
             },
-            parse_audit=[i.model_dump(mode="json") for i in partner_intervals],
+            parse_audit=[i.model_dump(mode="json") for i in (partner_intervals + calendar_together_windows + hard_exclusions)],
             constraint_audit=constraint_audit,
-            metadata={"input_hash": input_hash, "reason": "No valid candidates"},
+            metadata={
+                "input_hash": input_hash,
+                "reason": (
+                    "No feasible Christmas schedule satisfies the configured split, Christmas Day selection, and hard calendar exclusions. "
+                    "Review these settings or exclusions."
+                    if christmas else "No valid candidates"
+                ),
+            },
         )
+        result.metadata["calendar_event_audit"] = {
+            "google_hard_exclusions": len([i for i in hard_exclusions if i.source == "google_calendar"]),
+            "google_together_windows": len(calendar_together_windows),
+            "google_ignored_events": len(ignored_google_events),
+            "policy": {
+                "default_mode": runtime_config.calendar_event_policy_default_mode,
+                "hard_tags": list(runtime_config.calendar_event_policy_hard_tags),
+                "together_tags": list(runtime_config.calendar_event_policy_together_tags),
+            },
+        }
+        if ignored_google_events:
+            result.metadata["google_ignored_events"] = ignored_google_events
         if google_calendar_warnings:
             result.metadata["google_calendar_warnings"] = google_calendar_warnings
+        if christmas:
+            result.artifacts = write_artifacts(result)
         db.save_result(run_id, result.model_dump(mode="json"))
         db.save_audit(run_id, "constraint", constraint_audit)
         db.save_run_header(run_id, planning_period, "blocked", input_hash)
@@ -236,6 +367,8 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
     result = PlanResultPayload(
         run_id=run_id,
         status="ok",
+        following_weekend=following_weekend,
+        christmas=christmas,
         input_summary={
             "planning_period": planning_period,
             "holiday_start": str(req.holiday_start),
@@ -248,7 +381,7 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
             "couple_time_working_count": len(working_candidates),
             "couple_time_not_working_count": len(non_working_candidates),
         },
-        parse_audit=[i.model_dump(mode="json") for i in (partner_intervals + hard_exclusions)],
+        parse_audit=[i.model_dump(mode="json") for i in (partner_intervals + calendar_together_windows + hard_exclusions)],
         primary=primary,
         alternatives=alternatives,
         couple_time_views={
@@ -259,6 +392,18 @@ def run_planning(req: PlanRunRequest) -> PlanResultPayload:
         constraint_audit=constraint_audit,
         metadata={"input_hash": input_hash},
     )
+    result.metadata["calendar_event_audit"] = {
+        "google_hard_exclusions": len([i for i in hard_exclusions if i.source == "google_calendar"]),
+        "google_together_windows": len(calendar_together_windows),
+        "google_ignored_events": len(ignored_google_events),
+        "policy": {
+            "default_mode": runtime_config.calendar_event_policy_default_mode,
+            "hard_tags": list(runtime_config.calendar_event_policy_hard_tags),
+            "together_tags": list(runtime_config.calendar_event_policy_together_tags),
+        },
+    }
+    if ignored_google_events:
+        result.metadata["google_ignored_events"] = ignored_google_events
     if google_calendar_warnings:
         result.metadata["google_calendar_warnings"] = google_calendar_warnings
 
