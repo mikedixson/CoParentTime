@@ -275,8 +275,10 @@ def test_home_christmas_control_and_saved_output_wiring(christmas_runtime, monke
     assert 'name="christmas_day_parent" value="other_parent" />' in html
     assert "configureChristmasControl();" in html
     assert "christmas_day_parent: fd.get('christmas_day_parent') || null" in html
-    assert "christmasText(savedChristmas, plan)," in html
-    assert html.count("${christmasNote(savedChristmas, plan)}") == 2
+    assert "const text = christmasText(savedChristmas, plan);" in html
+    assert html.count("const christmasLines = scheduleClipboardChristmasLines(plan)") == 2
+    assert "${christmasNote(savedChristmas, plan)}" in html
+    assert "html += christmasNote(savedChristmas);" in html
     assert "const boxingDay = boxingDayText(context, plan);" in html
     assert "Boxing Day parent:" in html
     assert "esc(result.metadata?.reason" in html
